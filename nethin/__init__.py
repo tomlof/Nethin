@@ -9,6 +9,7 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 from nethin import data
+from nethin import models
 from nethin import normalization
 from nethin import padding
 from nethin import trainers
@@ -16,4 +17,4 @@ from nethin import utils
 
 __version__ = "0.0.1"
 
-__all__ = ["data", "normalization", "padding", "trainers", "utils"]
+__all__ = ["data", "models", "normalization", "padding", "trainers", "utils"]

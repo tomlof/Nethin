@@ -10,10 +10,16 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
+import json
+import base64
+
+import numpy as np
+
 import tensorflow as tf
 import keras.backend as K
+from keras.engine.topology import _to_snake_case as to_snake_case
 
-__all__ = ["with_device", "Helper"]
+__all__ = ["with_device", "Helper", "to_snake_case"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
@@ -201,3 +207,71 @@ class TensorflowHelper(object):
 
 
 Helper = TensorflowHelper
+
+
+def serialize_array(array):
+    """Serialise a numpy array to a JSON string.
+
+    Adapted from:
+        https://stackoverflow.com/questions/30698004/how-can-i-serialize-a-numpy-array-while-preserving-matrix-dimensions
+
+    Parameters
+    ----------
+    array : numpy array
+        The numpy array to serialise.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> array = np.random.rand(3, 4)
+    >>> string = utils.serialize_array(array)
+    >>> string  # doctest: +ELLIPSIS
+    '["<f8", "7FFf...Ce8/", [3, 4]]'
+    >>> array2 = utils.deserialize_array(string)
+    >>> np.linalg.norm(array - array2)
+    0.0
+    """
+    string = json.dumps([array.dtype.str,
+                         base64.b64encode(array).decode("utf-8"),
+                         array.shape])
+    return string
+
+
+def deserialize_array(string):
+    """De-serialise a string representation (JSON) to a numpy array.
+
+    Adapted from:
+        https://stackoverflow.com/questions/30698004/how-can-i-serialize-a-numpy-array-while-preserving-matrix-dimensions
+
+    Parameters
+    ----------
+    string : str
+        JSON representation (created using ``serialize_array``) to create numpy
+        array from.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> array = np.random.rand(3, 4)
+    >>> string = utils.serialize_array(array)
+    >>> string  # doctest: +ELLIPSIS
+    '["<f8", "7FFf...Ce8/", [3, 4]]'
+    >>> array2 = utils.deserialize_array(string)
+    >>> np.linalg.norm(array - array2)
+    0.0
+    """
+    dtype, array, shape = json.loads(string)
+    dtype = np.dtype(dtype)
+    array = np.frombuffer(base64.b64decode(array), dtype)
+    array = array.reshape(shape)
+
+    return array
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()

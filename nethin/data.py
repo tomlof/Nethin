@@ -602,8 +602,9 @@ class DicomGenerator(BaseGenerator):
         Whether or not to start over from the first file again after the
         generator has finished. Default is False, do not start over again.
 
-    bias : float, optional
-        A bias to add to the generated images. Use this in conjunction with
+    bias : float or list of float, optional
+        A bias to add to the generated images. If a list of float, each value
+        is the bias for the corresponding channel. Use this in conjunction with
         ``scale`` in order to scale and center the images to a particular
         range, e.g. to [-1, 1]. E.g., to scale a 8-bit grey-scale image to the
         range [-1, 1], you would have ``bias=-127.5`` and ``scale=1.0 / 127.5``
@@ -613,12 +614,13 @@ class DicomGenerator(BaseGenerator):
 
         Default is None, which means to not add a bias.
 
-    scale : float, optional
-        A factor to use to scale the generated images. Use this in conjunction
-        with ``bias`` in order to scale and center the images to a particular
-        range, e.g. to [-1, 1]. E.g., to scale a 8-bit grey-scale image to the
-        range [-1, 1], you would have ``bias=-127.5`` and ``scale=1.0 / 127.5``
-        and the operation would thus be
+    scale : float or list of float, optional
+        A factor to use to scale the generated images. If a list of float, each
+        value is the scale for the corresponding channel. Use this in
+        conjunction with ``bias`` in order to scale and center the images to a
+        particular range, e.g. to [-1, 1]. E.g., to scale a 8-bit grey-scale
+        image to the range [-1, 1], you would have ``bias=-127.5`` and
+        ``scale=1.0 / 127.5`` and the operation would thus be
 
             I = (I + bias) * scale = (I - 127.5) / 127.5
 
@@ -720,8 +722,23 @@ class DicomGenerator(BaseGenerator):
         self.minimum_size = bool(minimum_size)
         self.interp = str(interp)
         self.restart_generation = bool(restart_generation)
-        self.bias = float(bias) if (bias is not None) else bias
-        self.scale = float(scale) if (scale is not None) else scale
+
+        if bias is None:
+            self.bias = None
+        else:
+            if isinstance(bias, (float, int)):
+                self.bias = [float(bias) for i in range(len(image_names))]
+            else:
+                self.bias = [float(bias_) for bias_ in bias]
+
+        if scale is None:
+            self.scale = None
+        else:
+            if isinstance(scale, (float, int)):
+                self.scale = [float(scale) for i in range(len(image_names))]
+            else:
+                self.scale = [float(scale_) for scale_ in scale]
+
         self.randomize_order = bool(randomize_order)
 
         if random_pool_size is None:
@@ -765,7 +782,7 @@ class DicomGenerator(BaseGenerator):
         """
         dir_path = self.dir_path  # "~/data"
         image_names = self.image_names  # ["Patient 1", "Patient 2"]
-        channel_names = self.channel_names  # [["CT.*", "[CT].*"], ["MR.*", "[MR].*"]]
+        channel_names = self.channel_names  # [["CT.*", "[CT].*"], ["MR.*"]]
 
         if self._image_i >= len(image_names):
             if self.restart_generation:
@@ -899,12 +916,12 @@ class DicomGenerator(BaseGenerator):
         """
         for i in range(len(images)):
             image = images[i]
-            image = self._process_image(image)
+            image = self._process_image(image, i)
             images[i] = image
 
         return images
 
-    def _process_image(self, image):
+    def _process_image(self, image, channel_index):
         """Process all channels for a slice in an image.
         """
         if self.size is not None:
@@ -939,10 +956,10 @@ class DicomGenerator(BaseGenerator):
                 image = image[:, ::-1, :]
 
         if self.bias is not None:
-            image = image + self.bias
+            image = image + self.bias[channel_index]
 
         if self.scale is not None:
-            image = image * self.scale
+            image = image * self.scale[channel_index]
 
         return image
 
@@ -958,7 +975,10 @@ class DicomGenerator(BaseGenerator):
         """
         return_images = []
         while len(return_images) < self.batch_size:
-            queue_lim = max(1, (self.random_pool_size - 1) * self._average_num_slices)
+            if self.random_pool_size is None:
+                queue_lim = 1
+            else:
+                queue_lim = max(1, (self.random_pool_size - 1) * self._average_num_slices)
             if self._file_queue_len() < queue_lim:
                 update_done = self._file_queue_update()
 

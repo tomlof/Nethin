@@ -11,8 +11,9 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 from nethin import data
 from nethin import normalization
 from nethin import padding
+from nethin import trainers
 from nethin import utils
 
 __version__ = "0.0.1"
 
-__all__ = ["data", "normalization", "padding", "utils"]
+__all__ = ["data", "normalization", "padding", "trainers", "utils"]

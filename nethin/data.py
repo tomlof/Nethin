@@ -32,7 +32,8 @@ except (ImportError):
     _HAS_DICOM = False
 
 __all__ = ["BaseGenerator",
-           "ImageGenerator", "ArrayGenerator", "DicomGenerator"]
+           "ImageGenerator", "ArrayGenerator",
+           "Dicom3DGenerator", "DicomGenerator"]
 
 
 if _HAS_GENERATOR:
@@ -117,7 +118,7 @@ class ImageGenerator(BaseGenerator):
 
     recursive : bool, optional
         Whether or not to traverse the given directory recursively. Default is
-        True, traverse directory recursively.
+        False, do not traverse the directory recursively.
 
     batch_size : int, optional
         The number of images to return at each yield. Default is 1, return only
@@ -208,7 +209,7 @@ class ImageGenerator(BaseGenerator):
     >>> import numpy as np
     >>> from nethin.data import ImageGenerator
     """
-    def __init__(self, dir_path, recursive=True, batch_size=1,
+    def __init__(self, dir_path, recursive=False, batch_size=1,
                  num_training=None, crop=None, size=None, flip=None,
                  crop_center=True, keep_aspect_ratio=True, minimum_size=True,
                  interp="bilinear", restart_generation=False, bias=None,
@@ -251,14 +252,17 @@ class ImageGenerator(BaseGenerator):
         self.restart_generation = bool(restart_generation)
 
         if random_state is None:
-            self.random_state = np.random
+            self.random_state = np.random.random.__self__
         else:
             if isinstance(random_state, (int, float, np.ndarray)):
                 self.random_state = np.random.RandomState(seed=random_state)
-            elif isinstance(np.asarray(random_state), np.ndarray):
-                self.random_state = np.random.RandomState(seed=random_state)
-            else:
+            elif isinstance(random_state, np.random.RandomState):
                 self.random_state = random_state
+            elif hasattr(random_state, "rand") and \
+                    hasattr(random_state, "randint"):  # E.g., np.random
+                self.random_state = random_state
+            else:  # May crash here..
+                self.random_state = np.random.RandomState(seed=random_state)
 
         self.walker = None
         self._restart_walker()
@@ -285,7 +289,7 @@ class ImageGenerator(BaseGenerator):
                     self.left_files.append(file)
 
                 if not self.recursive:
-                    raise StopIteration
+                    self.walker.close()
 
             except StopIteration as e:
                 if self.restart_generation:
@@ -520,7 +524,7 @@ class ArrayGenerator(BaseGenerator):
         return np.array(return_samples)
 
 
-class DicomGenerator(BaseGenerator):
+class Dicom3DGenerator(BaseGenerator):
     """A generator over 3D Dicom images in a given directory.
 
     The images are organised in a directory for each image, a subdirectory
@@ -749,14 +753,18 @@ class DicomGenerator(BaseGenerator):
         self.data_format = conv_utils.normalize_data_format(data_format)
 
         if random_state is None:
-            self.random_state = np.random
+            self.random_state = np.random.random.__self__
         else:
             if isinstance(random_state, (int, float, np.ndarray)):
                 self.random_state = np.random.RandomState(seed=random_state)
-            elif isinstance(np.asarray(random_state), np.ndarray):
-                self.random_state = np.random.RandomState(seed=random_state)
-            else:
+            elif isinstance(random_state, np.random.RandomState):
                 self.random_state = random_state
+            elif hasattr(random_state, "rand") and \
+                    hasattr(random_state, "randint") and \
+                    hasattr(random_state, "choice"):  # E.g., np.random
+                self.random_state = random_state
+            else:  # May crash here..
+                self.random_state = np.random.RandomState(seed=random_state)
 
         self._image_i = 0
         self._file_queue = []
@@ -966,7 +974,7 @@ class DicomGenerator(BaseGenerator):
     def throw(self, typ, **kwargs):
         """Raise an exception in the generator.
         """
-        super(DicomGenerator, self).throw(typ, **kwargs)
+        super(Dicom3DGenerator, self).throw(typ, **kwargs)
 
     def send(self, value):
         """Send a value into the generator.
@@ -997,5 +1005,403 @@ class DicomGenerator(BaseGenerator):
                     if self.data_format == "channels_last":
                         images = np.transpose(images, (1, 2, 0))  # Channels last
                     return_images.append(images)
+
+        return return_images
+
+
+class DicomGenerator(BaseGenerator):
+    """A generator over Dicom images in a given directory.
+
+    It will be assumed that the Dicom files have some particular tags. They are
+    assumed to have: "RescaleSlope", "RescaleIntercept", "Rows", "Columns".
+
+    This generator requires that the ``dicom`` package be installed.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the dicom files.
+
+    recursive : bool, optional
+        Whether or not to traverse the given directory recursively. Default is
+        False, do not traverse the directory recursively.
+
+    batch_size : int, optional
+        The number of images to return at each yield. Default is 1, return only
+        one image at the time. If there are not enough images to return in one
+        batch, the source directory is considered exhausted, and StopIteration
+        will be thrown.
+
+    crop : tuple of int, length 2, optional
+        A subimage size to crop randomly from the read image. If any images are
+        smaller than crop in any direction, no cropping will be performed in
+        that direction. Default is None, do not perform any cropping.
+
+    size : tuple of int, length 2, optional
+        The (possibly cropped image) will be resized to this absolute size.
+        Default is None, do not resize the images. See also
+        ``keep_aspect_ratio`` and ``minimum_size``.
+
+    flip : float, optional
+        The probability of flipping the image in the left-right direction.
+        Default is None, which means to not flip the image (equivalent to
+        ``flip=0.0``.
+
+    crop_center : bool, optional
+        Whether or not to select the middle portion of the image when cropping,
+        or to select random crop positions. Default is True, select the center
+        of the image when cropping.
+
+    keep_aspect_ratio : bool, optional
+        Whether or not to keep the aspect ratios of the images when resizing.
+        Only used if size it not None. Default is True, keep the aspect ratio
+        of the original image. See also ``minimum_size``.
+
+    minimum_size : bool, optional
+        If ``keep_aspect_ratio=True``, then ``minimum_size`` determines if the
+        given size is the minimum size (scaled image is equal to or larger than
+        the given ``size``) or the maximum size (scaled image is equal to or
+        smaller than the given ``size``) of the scaled image. Default is True,
+        the scaled image will be at least as large as ``size``. See also
+        ``keep_aspect_ratio``.
+
+    interp : str, optional
+        Interpolation to use for re-sizing ("nearest", "lanczos", "bilinear",
+        "bicubic" or "cubic"). Default is "bilinear".
+
+    restart_generation : bool, optional
+        Whether or not to start over from the first file again after the
+        generator has finished. Default is False, do not start over again.
+
+    bias : float, optional
+        A bias to add to the generated images. Use this in conjunction with
+        ``scale`` in order to scale and center the images to a particular
+        range, e.g. to [-1, 1]. E.g., to scale a 8-bit grey-scale image to the
+        range [-1, 1], you would have ``bias=-127.5`` and ``scale=1.0 / 127.5``
+        and the operation would thus be
+
+            I = (I + bias) * scale = (I - 127.5) / 127.5
+
+        Default is None, which means to not add a bias.
+
+    scale : float, optional
+        A factor to use to scale the generated images. Use this in
+        conjunction with ``bias`` in order to scale and center the images to a
+        particular range, e.g. to [-1, 1]. E.g., to scale a 8-bit grey-scale
+        image to the range [-1, 1], you would have ``bias=-127.5`` and
+        ``scale=1.0 / 127.5`` and the operation would thus be
+
+            I = (I + bias) * scale = (I - 127.5) / 127.5
+
+        Default is None, which means to not scale the images.
+
+    randomize_order : bool, optional
+        Whether or not to randomize the order of the images as they are read.
+        The order will be completely random if there are no sub-folders or
+        ``recursive=False``. When there are sub-folders, and they are read
+        recursively, they will be read one folder at the time and only
+        randomized on a per-folder basis. Use ``random_pool_size`` in order to
+        achieve inter-subfolder mixing. Default is False, do not randomise the
+        order of the images.
+
+    random_pool_size : int, optional
+        Since the data are read one sub-folder at the time, the images can only
+        be randomised on a per-folder basis. A random pool can therefore be
+        used to achieve inter-folder mixing, and from which images are selected
+        one mini-batch at the time. The value of ``random_pool_size``
+        determines how many images will be read and kept in the pool at the
+        same time. When the number of iamges in the pool falls below the given
+        value, new images will be automatically read into the pool, and the
+        pool will be shuffled again to improve the mixing. If the
+        ``random_pool_size`` is small, only a few image will be kept in the
+        pool, and mini-batches may not be independent. If possible, for a
+        complete mixing of all images, the value of ``random_pool_size``
+        should be set equal to the total number of images in ``dir_path`` and
+        its subfolders (if ``recursive=True``). Default is None, which means to
+        not use the random pool. In this case, when ``randomize_order=True``,
+        the images will only be randomised within each sub-folder. If
+        ``randomize_order=False``, the pool will not be used at all.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers (for the
+        flip and for the random order). If int, float or array_like, a new
+        random state is created with the provided value as seed. If None, the
+        default numpy random state (np.random) is used. Default is None, use
+        the default numpy random state.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from nethin.data import DicomGenerator
+    """
+    def __init__(self,
+                 dir_path,
+                 recursive=False,
+                 batch_size=1,
+                 crop=None,
+                 size=None,
+                 flip=None,
+                 crop_center=True,
+                 keep_aspect_ratio=True,
+                 minimum_size=True,
+                 interp="bilinear",
+                 restart_generation=False,
+                 bias=None,
+                 scale=None,
+                 randomize_order=False,
+                 random_pool_size=None,
+                 data_format=None,
+                 random_state=None):
+
+        if not _HAS_DICOM:
+            raise RuntimeError('The "dicom" package is not available.')
+
+        self.dir_path = str(dir_path)
+        self.recursive = bool(recursive)
+        self.batch_size = max(1, int(batch_size))
+
+        if crop is None:
+            self.crop = crop
+        else:
+            self.crop = (max(1, int(crop[0])), max(1, int(crop[1])))
+
+        if size is None:
+            self.size = size
+        else:
+            self.size = (max(1, int(size[0])), max(1, int(size[1])))
+
+        if flip is None:
+            self.flip = flip
+        else:
+            self.flip = max(0.0, min(float(flip), 1.0))
+
+        self.crop_center = bool(crop_center)
+        self.keep_aspect_ratio = bool(keep_aspect_ratio)
+        self.minimum_size = bool(minimum_size)
+
+        allowed_interp = ("nearest", "lanczos", "bilinear", "bicubic", "cubic")
+        self.interp = str(interp).lower()
+        if self.interp not in allowed_interp:
+            raise ValueError("The ``interp`` parameter must be one of " +
+                             str(allowed_interp))
+
+        self.restart_generation = bool(restart_generation)
+
+        if bias is None:
+            self.bias = None
+        else:
+            self.bias = float(bias)
+
+        if scale is None:
+            self.scale = None
+        else:
+            self.scale = float(scale)
+
+        self.randomize_order = bool(randomize_order)
+
+        if random_pool_size is None:
+            self.random_pool_size = None
+        else:
+            self.random_pool_size = max(self.batch_size, int(random_pool_size))
+
+        self.data_format = conv_utils.normalize_data_format(data_format)
+
+        if random_state is None:
+            self.random_state = np.random.random.__self__
+        else:
+            if isinstance(random_state, (int, float, np.ndarray)):
+                self.random_state = np.random.RandomState(seed=random_state)
+            elif isinstance(random_state, np.random.RandomState):
+                self.random_state = random_state
+            elif hasattr(random_state, "rand") and \
+                    hasattr(random_state, "randint") and \
+                    hasattr(random_state, "shuffle"):  # E.g., np.random
+                self.random_state = random_state
+            else:  # May crash here..
+                self.random_state = np.random.RandomState(seed=random_state)
+
+        self._walker = None
+        self._restart_walker()
+
+        self._image_i = 0
+        self._file_queue = []
+
+        # Fill the queue with random_pool_size images, if possible
+        if self.random_pool_size is None:
+            pool_size = 1
+        else:
+            pool_size = self.random_pool_size
+        while self._file_queue_len() < pool_size:
+            if not self._file_queue_update(throw=False):  # No more files
+                break
+
+    def _restart_walker(self):
+
+        if self._walker is not None:
+            self._walker.close()
+        self._walker = os.walk(self.dir_path)
+
+    def _file_queue_len(self):
+
+        return len(self._file_queue)
+
+    def _file_queue_push(self, file):
+
+        # Append on the right
+        self._file_queue.append(file)
+
+    def _file_queue_pop(self):
+
+        # Pop on the left
+        file_name = self._file_queue[0]
+        del self._file_queue[0]
+
+        return file_name
+
+    def _file_queue_randomize(self):
+
+        self.random_state.shuffle(self._file_queue)  # Shuffle in-place
+
+    def _file_queue_update(self, throw=True):
+
+        try_again = True
+        tries = 0
+        while try_again and (tries <= 1):
+            try_again = False
+            try:
+                dir_name, sub_dirs, files = next(self._walker)
+
+                for i in range(len(files)):
+                    file = os.path.join(dir_name, files[i])
+                    self._file_queue_push(file)
+
+                if self.randomize_order:
+                    self._file_queue_randomize()
+
+                if not self.recursive:
+                    self._walker.close()
+
+                return True
+
+            except StopIteration as e:
+                if self.restart_generation:
+                    self._restart_walker()
+                    try_again = True
+                    tries += 1  # Only try to restart again once
+                else:
+                    if throw:
+                        self.throw(e)
+
+            except Exception as e:
+                if throw:
+                    self.throw(e)
+
+        return False  # An exception was raised
+
+    def _read_image(self, file_name):
+        """Extracts the file names for all channels of the next image.
+        """
+        image = self._read_dicom(file_name)
+
+        return image
+
+    def _read_dicom(self, file_name):
+        """Read a single dicom image or return None if not a dicom file.
+        """
+        try:
+            data = dicom.read_file(file_name)
+        except (dicom.filereader.InvalidDicomError, FileNotFoundError) as e:
+            return None
+
+        image = data.pixel_array.astype(float)
+
+        # Convert to original units
+        image = image * data.RescaleSlope + data.RescaleIntercept
+
+        return image
+
+    def _process_image(self, image):
+        """Process an image.
+        """
+        if self.size is not None:
+            if self.keep_aspect_ratio:
+                im_size = image.shape[:2]
+                factors = [float(im_size[0]) / float(self.size[0]),
+                           float(im_size[1]) / float(self.size[1])]
+                factor = min(factors) if self.minimum_size else max(factors)
+                new_size = list(im_size[:])
+                new_size[0] = int((new_size[0] / factor) + 0.5)
+                new_size[1] = int((new_size[1] / factor) + 0.5)
+            else:
+                new_size = self.size
+
+            image = imresize(image, new_size, interp=self.interp)
+
+        if self.crop is not None:
+            crop0 = min(image.shape[0], self.crop[0])
+            crop1 = min(image.shape[1], self.crop[1])
+            if self.crop_center:
+                top = int(round((image.shape[0] / 2) - (crop0 / 2)) + 0.5)
+                left = int(round((image.shape[1] / 2) - (crop1 / 2)) + 0.5)
+            else:
+                top = self.random_state.randint(
+                        0, max(1, image.shape[0] - crop0))
+                left = self.random_state.randint(
+                        0, max(1, image.shape[1] - crop1))
+            image = image[top:top + crop0, left:left + crop1]
+
+        if self.flip is not None:
+            if self.random_state.rand() < self.flip:
+                image = image[:, ::-1, :]
+
+        if self.bias is not None:
+            image = image + self.bias
+
+        if self.scale is not None:
+            image = image * self.scale
+
+        return image
+
+    def throw(self, typ, **kwargs):
+        """Raise an exception in the generator.
+        """
+        super(DicomGenerator, self).throw(typ, **kwargs)
+
+    def send(self, value):
+        """Send a value into the generator.
+
+        Return next yielded value or raise StopIteration.
+        """
+        return_images = []
+        while len(return_images) < self.batch_size:
+            if self.random_pool_size is None:
+                queue_lim = 1
+            else:
+                queue_lim = self.random_pool_size
+            if self._file_queue_len() < queue_lim:
+                update_done = self._file_queue_update(throw=False)
+
+            file_name = None
+            try:
+                file_name = self._file_queue_pop()
+            except (IndexError) as e:
+                if not update_done:  # Images not added, no images in queue
+                    self.throw(StopIteration)
+
+            if file_name is not None:
+                image = self._read_image(file_name)
+                if image is not None:
+                    image = self._process_image(image)
+
+                    return_images.append(image)
 
         return return_images

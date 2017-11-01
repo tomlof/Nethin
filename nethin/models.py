@@ -17,7 +17,7 @@ import numpy as np
 
 import tensorflow as tf
 import keras.backend as K
-from keras.models import Model
+from keras.models import Sequential, Model
 from keras.utils import conv_utils
 from keras.initializers import TruncatedNormal
 from keras.engine.topology import get_source_inputs
@@ -34,6 +34,7 @@ import keras.optimizers as optimizers
 from keras.optimizers import Optimizer, Adam
 
 from nethin.utils import with_device, Helper, to_snake_case
+import nethin.utils as utils
 import nethin.padding as padding
 import nethin.layers as layers
 
@@ -45,6 +46,8 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
     # TODO: Add fit_generator, evaluate_generator and predict_generator
     # TODO: What about get_layer?
     def __init__(self, nethin_name, data_format=None, device=None, name=None):
+
+        self._nethin_name = str(nethin_name)
 
         self.data_format = conv_utils.normalize_data_format(data_format)
 
@@ -228,7 +231,9 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
         """
         self.model.load_weights(filepath, by_name=by_name)
 
-    def compile(self, optimizer, loss,
+    def compile(self,
+                optimizer,
+                loss,
                 metrics=None,
                 loss_weights=None,
                 sample_weight_mode=None,
@@ -531,7 +536,9 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
                                  verbose=verbose,
                                  steps=steps)
 
-    def train_on_batch(self, x, y,
+    def train_on_batch(self,
+                       x,
+                       y,
                        sample_weight=None,
                        class_weight=None):
         """Runs a single gradient update on a single batch of data.
@@ -626,15 +633,13 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
         return self._with_device(self.model.predict_on_batch,
                                  x)
 
-#    def save
-
 
 class UNet(BaseModel):
     """Generates the U-Net model by Ronneberger et al. (2015) [1]_.
 
     Parameters
     ----------
-    input_shape : tuple of ints, length 3, optional
+    input_shape : tuple of ints, length 3
         The shape of the input data, excluding the batch dimension.
 
     output_channels : int
@@ -1073,6 +1078,427 @@ class UNet(BaseModel):
         model = Model(inputs, outputs, name=self.name)
 
         return model
+
+
+class GAN(BaseModel):
+    """A basic Generative Adversarial Network [1]_.
+
+    Parameters
+    ----------
+    noise_shape : tuple of ints
+        The shape of the input to the generator network, excluding the batch
+        dimension.
+
+    data_shape : tuple of ints
+        The shape of the input to the discriminator network (i.e., the training
+        data), excluding the batch dimension.
+
+    generator : BaseModel or keras.models.Model
+        An instance of the generator network.
+
+    discriminator : BaseModel or keras.models.Model
+        An instance of the discriminator network. Warning! Avoid relying on
+        the discriminator until you have compiled the model.
+
+    num_iter_discriminator : int, optional
+        Positive integer. The number of iterations to train the discriminator
+        for, for every training iteration of the adversarial model. Default is
+        1.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually "/gpu:0"). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is "GAN".
+
+    References
+    ----------
+    .. [1] I. J. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu,
+       D. Warde-Farley, S. Ozair, A. C. Courville and Y. Bengio (2014).
+       "Generative Adversarial Networks". arXiv:1406.2661 [stat.ML], available
+       at: https://arxiv.org/abs/1406.2661. NIPS, 2014.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.set_random_seed(42)
+    >>> import nethin
+    >>> import nethin.models as models
+    >>> import nethin.utils as utils
+    >>> from keras.models import Sequential
+    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D, Convolution2DTranspose
+    >>> from keras.layers.advanced_activations import LeakyReLU
+    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape  # Input, Flatten, Lambda
+    >>> from keras.layers.normalization import BatchNormalization
+    >>> from keras.optimizers import Adam  # Optimizer
+    >>> from keras.datasets import mnist
+    >>>
+    >>> (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    >>> x_train = x_train[..., np.newaxis] / 255.0
+    >>> x_test = x_test[..., np.newaxis] / 255.0
+    >>> dropout_rate = 0.4
+    >>> alpha = 0.2
+    >>> noise_shape = (100,)
+    >>> data_shape = (28, 28, 1)
+    >>> # batch_size = 256
+    >>> batch_size = 100
+    >>> device = "/cpu:0"
+    >>> def discr():
+    ...     D = Sequential()
+    ...     D.add(Convolution2D(64, (5, 5), strides=2, input_shape=data_shape,
+    ...                         padding="same"))
+    ...     D.add(LeakyReLU(alpha))
+    ...     D.add(Dropout(dropout_rate))
+    ...     D.add(Convolution2D(128, (5, 5), strides=2, input_shape=data_shape,
+    ...                         padding="same"))
+    ...     D.add(LeakyReLU(alpha))
+    ...     D.add(Dropout(dropout_rate))
+    ...     D.add(Convolution2D(256, (5, 5), strides=2, input_shape=data_shape,
+    ...                         padding="same"))
+    ...     D.add(LeakyReLU(alpha))
+    ...     D.add(Dropout(dropout_rate))
+    ...     D.add(Convolution2D(256, (5, 5), strides=2, input_shape=data_shape,
+    ...                         padding="same"))
+    ...     D.add(LeakyReLU(alpha))
+    ...     D.add(Dropout(dropout_rate))
+    ...     D.add(Flatten())
+    ...     D.add(Dense(1))
+    ...     D.add(Activation("sigmoid"))
+    ...
+    ...     return D
+    >>>
+    >>> def gener():
+    ...     G = Sequential()
+    ...     G.add(Dense(7 * 7 * 256, input_shape=noise_shape))
+    ...     G.add(BatchNormalization(momentum=0.9))
+    ...     G.add(Activation("relu"))
+    ...     G.add(Reshape((7, 7, 256)))
+    ...     G.add(Dropout(dropout_rate))
+    ...     G.add(UpSampling2D())
+    ...     G.add(Convolution2DTranspose(128, (5, 5), padding="same"))
+    ...     G.add(BatchNormalization(momentum=0.9))
+    ...     G.add(Activation("relu"))
+    ...     G.add(UpSampling2D())
+    ...     G.add(Convolution2DTranspose(64, (5, 5), padding="same"))
+    ...     G.add(BatchNormalization(momentum=0.9))
+    ...     G.add(Activation("relu"))
+    ...     G.add(Convolution2DTranspose(1, (5, 5), padding="same"))
+    ...     G.add(Activation("sigmoid"))
+    ...
+    ...     return G
+    >>>
+    >>> D = utils.with_device(device, discr)
+    >>> G = utils.with_device(device, gener)
+    >>>
+    >>> gan = models.GAN(noise_shape, data_shape, G, D,
+    ...                  num_iter_discriminator=2,
+    ...                  device=device)
+    >>> gan.compile(optimizer=Adam(lr=0.0001, decay=5e-6),
+    ...             loss="binary_crossentropy",
+    ...             metrics=["accuracy"])
+    >>> loss_a = []
+    >>> loss_d = []
+    >>> # for it in range(1000):
+    >>> im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> loss = gan.train_on_batch(im_real)
+    >>> loss_d.append(loss[0][1])
+    >>> loss_a.append(loss[1][1])
+    >>> # print("it: %d, loss d: %f, loss a: %f" % (it, loss[0][1], loss[1][1]))
+    >>> loss
+    ([0.6749478, 0.68000001], [0.77042371, 0.0])
+    >>> # import matplotlib.pyplot as plt
+    >>> # plt.figure()
+    >>> # plt.subplot(1, 2, 1)
+    >>> # plt.plot(loss_d)
+    >>> # plt.subplot(1, 2, 2)
+    >>> # plt.plot(loss_a)
+    >>> # plt.show()
+    >>> # noise = np.random.uniform(-1.0, 1.0, size=(1,) + noise_shape)
+    >>> # fake_im = G.predict_on_batch(noise)
+    >>> # plt.figure()
+    >>> # plt.subplot(1, 2, 1)
+    >>> # plt.imshow(im_real[0, :, :, 0])
+    >>> # plt.subplot(1, 2, 2)
+    >>> # plt.imshow(fake_im[0, :, :, 0])
+    >>> # plt.show()
+    """
+    def __init__(self,
+                 noise_shape,
+                 data_shape,
+                 generator,
+                 discriminator,
+                 num_iter_discriminator=1,
+                 data_format=None,
+                 device=None,
+                 name="GAN"):
+
+        super(GAN, self).__init__("nethin.models.GAN",
+                                  data_format=data_format,
+                                  device=device,
+                                  name=name)
+
+        if noise_shape is not None:
+            if not isinstance(noise_shape, (tuple, list)):
+                raise ValueError('"noise_shape" must be a tuple.')
+        self.noise_shape = tuple([int(d) for d in noise_shape])
+
+        if data_shape is not None:
+            if not isinstance(data_shape, (tuple, list)):
+                raise ValueError('"data_shape" must be a tuple.')
+        self.data_shape = tuple([int(d) for d in data_shape])
+
+        self.generator = generator
+        self.discriminator = discriminator
+        self.num_iter_discriminator = max(1, int(num_iter_discriminator))
+
+        if self.data_format == "channels_last":
+            self._axis = 3
+        else:  # data_format == "channels_first":
+            self._axis = 1
+
+        self._old_d_trainable = None
+        self._model_a_factory = None
+
+        self.model = self._with_device(self._generate_model)
+
+    def _generate_model(self):
+
+        def _generate_d():
+            model_d = Sequential()
+            model_d.add(self.discriminator)
+
+            return model_d
+
+        def _generate_a():
+            model_a = Sequential()
+            model_a.add(self.generator)
+
+            # We will change this back after compile, in order to leave no
+            # side-effects. This is potentially dangerous, since the user may
+            # change this value between _generate_model was called and compile
+            # is called. Solution?
+            self._old_d_trainable = self.discriminator.trainable
+            self.discriminator.trainable = False
+            # for l in D.layers:
+            #     l.trainable = False
+            model_a.add(self.discriminator)
+
+            return model_a
+
+        self._model_a_factory = _generate_a
+
+        model_d = self._with_device(_generate_d)
+
+        return [model_d, None]
+
+    def compile(self,
+                optimizer,
+                loss,
+                metrics=None,
+                loss_weights=None,
+                sample_weight_mode=None,
+                weighted_metrics=None,
+                target_tensors=None):
+        """Configures the model for training.
+
+        Parameters
+        ----------
+        optimizer : str, keras.optimizers.Optimizer or list of str or
+                    keras.optimizers.Optimizer, length 2
+            String (name of optimizer) or optimizer object. See
+            `optimizers <https://keras.io/optimizers>`_. If a list, the first
+            optimiser is used for the discriminator and the second optimiser is
+            used for the adversarial model.
+
+        loss : str or list of str, length 2
+            String (name of objective function) or objective function. See
+            `losses <https://keras.io/losses>`_. If a list, the first loss is
+            used for the discriminator and the second loss is used for the
+            adversarial model.
+
+         metrics : list of str or list of list of str, length 2, optional
+             List of metrics to be evaluated by the model during training and
+             testing. Typically you will use ``metrics=["accuracy"]``. If a
+             list of lists of str, the first list of metrics are used for the
+             discriminator and the second list of metrics is used for the
+             adversarial model.
+
+        loss_weights : list or dict, optional
+            Currently ignored by this model.
+
+        sample_weight_mode : None, str, list or dict, optional
+            Currently ignored by this model.
+
+        weighted_metrics : list, optional
+            Currently ignored by this model.
+
+        target_tensors : Tensor, optional
+            Currently ignored by this model.
+
+        **kwargs
+            When using the Theano/CNTK backends, these arguments are passed
+            into ``K.function``. When using the TensorFlow backend, these
+            arguments are passed into ``tf.Session.run``.
+
+        Raises
+        ------
+        ValueError
+            In case of invalid arguments for ``optimizer``, ``loss``,
+            ``metrics`` or ``sample_weight_mode``.
+        """
+        if (weighted_metrics is None) and (target_tensors is None):
+            # Recent additions to compile may not be available.
+            self._with_device(self._compile,
+                              optimizer,
+                              loss,
+                              metrics=metrics,
+                              loss_weights=loss_weights,
+                              sample_weight_mode=sample_weight_mode)
+        else:
+            self._with_device(self._compile,
+                              optimizer,
+                              loss,
+                              metrics=metrics,
+                              loss_weights=loss_weights,
+                              sample_weight_mode=sample_weight_mode,
+                              weighted_metrics=weighted_metrics,
+                              target_tensors=target_tensors)
+
+    def _compile(self,
+                 optimizer,
+                 loss,
+                 metrics=None,
+                 loss_weights=None,
+                 sample_weight_mode=None,
+                 weighted_metrics=None,
+                 target_tensors=None):
+
+        optimizer = utils.normalize_object(optimizer, 2, "optimizers")
+        loss = utils.normalize_str(loss, 2, "losses")
+        if metrics is not None:
+            if isinstance(metrics, list):
+                if isinstance(metrics[0], str):
+                    metrics = (metrics,) * 2
+                elif not isinstance(metrics, list):
+                    raise ValueError('The "metrics" argument must be a list '
+                                     'of str or a list of a list of str.')
+            else:
+                raise ValueError('The "metrics" argument must be a list of '
+                                 'str or a list of a list of str.')
+        else:
+            metrics = [metrics, metrics]
+
+        model_d, model_a = self.model
+
+        model_d.compile(optimizer=optimizer[0],
+                        loss=loss[0],
+                        metrics=metrics[0])
+
+        if self.model[1] is None:
+            model_a = self._model_a_factory()
+            self.model[1] = model_a
+
+        model_a.compile(optimizer=optimizer[1],
+                        loss=loss[1],
+                        metrics=metrics[1])
+
+        # We set it to False, let's change it back unless it has changed.
+        if self.discriminator.trainable is False:
+            self.discriminator.trainable = self._old_d_trainable
+
+    def train_on_batch(self,
+                       x,
+                       y=None,
+                       sample_weight=None,
+                       class_weight=None):
+        """Runs a single gradient update on a single batch of data.
+
+        Arguments
+        ---------
+        x : numpy.ndarray or list of numpy.ndarray or dict of numpy.ndarray
+            Numpy array of training data, or list of Numpy arrays if the model
+            has multiple inputs. If all inputs in the model are named, you can
+            also pass a dictionary mapping input names to Numpy arrays.
+
+        y : numpy.ndarray or list of numpy.ndarray or dict of numpy.ndarray,
+            optional
+            Numpy array of target data, or list of Numpy arrays if the model
+            has multiple outputs. If all outputs in the model are named, you
+            can also pass a dictionary mapping output names to Numpy arrays.
+
+        sample_weight : numpy.ndarray, optional
+            Optional array of the same length as ``x``, containing weights to
+            apply to the model's loss for each sample. In the case of temporal
+            data, you can pass a 2D array with shape (samples,
+            sequence_length), to apply a different weight to every timestep of
+            every sample. In this case you should make sure to specify
+            ``sample_weight_mode="temporal"`` in ``compile()``.
+
+        class_weight : dict, optional
+            Optional dictionary mapping class indices (integers) to a weight
+            (float) to apply to the model's loss for the samples from this
+            class during training. This can be useful to tell the model to
+            "pay more attention" to samples from an under-represented class.
+
+        Returns
+        -------
+        Scalar training loss (if the model has a single output and no metrics)
+        or list of scalars (if the model has multiple outputs and/or metrics).
+        The attribute ``model.metrics_names`` will give you the display labels
+        for the scalar outputs. Returns the discriminator loss followed by the
+        adversarial model's loss.
+        """
+        return self._with_device(self._train_on_batch,
+                                 x,
+                                 y,
+                                 sample_weight=sample_weight,
+                                 class_weight=class_weight)
+
+    def _train_on_batch(self,
+                        x,
+                        y=None,
+                        sample_weight=None,
+                        class_weight=None):
+
+        batch_size = x.shape[0]
+
+        model_d, model_a = self.model
+
+        assert(model_a is not None)
+
+        # Train discriminator
+        for i in range(self.num_iter_discriminator):
+            # im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), ...]
+            im_real = x
+            noise = np.random.uniform(-1.0, 1.0,
+                                      size=(batch_size,) + self.noise_shape)
+            im_fake = self.generator.predict(noise)
+            X = np.concatenate((im_real, im_fake))
+            _y = np.zeros([2 * batch_size, 1])
+            _y[batch_size:, :] = 1
+            loss_d = model_d.train_on_batch(X, _y)
+
+        # Train adversarial model
+        if y is None:
+            y = np.zeros([batch_size, 1])  # The oposite of what we "want to do"
+        noise = np.random.uniform(-1.0, 1.0,
+                                  size=(batch_size,) + self.noise_shape)
+        loss_a = model_a.train_on_batch(noise, y)
+
+        return loss_d, loss_a
 
 
 if __name__ == "__main__":

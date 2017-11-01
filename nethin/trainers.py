@@ -187,11 +187,9 @@ class CVTrainer(object):
                  output_channels,
                  generator_train,
                  generator_validation,
-                 generator_test,
                  max_epochs=100,
                  max_iter_train=None,
                  max_iter_validation=None,
-                 max_iter_test=None,
                  verbose=False):
 
         self.model_factory = model_factory
@@ -199,7 +197,6 @@ class CVTrainer(object):
         self.output_channels = max(1, int(output_channels))
         self.generator_train = generator_train
         self.generator_validation = generator_validation
-        self.generator_test = generator_test
 
         assert(len(self.generator_train) == len(self.generator_validation))
 
@@ -220,16 +217,12 @@ class CVTrainer(object):
         else:
             self.max_iter_validation = max_iter_validation
 
-        if max_iter_test is not None:
-            self.max_iter_test = max(1, int(max_iter_test))
-        else:
-            self.max_iter_test = max_iter_test
-
         self.verbose = bool(verbose)
 
     def train(self):
         """Perform a full training program on the given model.
         """
+        loss_cv_train = []
         loss_cv_validation = []
         for cv in range(self._cv_rounds):
             model = self.model_factory()
@@ -272,6 +265,8 @@ class CVTrainer(object):
                     restart_train = True
                 loss_train.append(loss_batch_train)
 
+                loss_cv_train.append(loss_train)
+
                 batch_it_validation = 0
                 loss_batch_validation = []
                 if restart_validation:
@@ -307,35 +302,9 @@ class CVTrainer(object):
 
             del model
             gc.collect()
-            for i in range(4):
-                time.sleep()
-                gc.collect()
+            if cv < self._cv_rounds - 1:
+                for i in range(4):
+                    time.sleep(1)
+                    gc.collect()
 
-        batch_it_test = 0
-        loss_test = []
-        generator_test = self.generator_test()
-        try:
-            while True:
-                images = np.array(next(generator_test), dtype=np.float32)
-
-                inputs = images[..., :self.input_channels]
-                outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
-                loss = model.test_on_batch(inputs, outputs)
-
-                loss_test.append(loss)
-
-                if self.verbose:
-                    print("test batch: %d, loss: %s"
-                          % (batch_it_test, str(loss)))
-
-                batch_it_test += 1
-
-                if self.max_iter_test is not None:
-                    if batch_it_test >= self.max_iter_test:
-                        break
-
-        except (StopIteration) as e:
-            pass
-
-        return loss_train, loss_validation, loss_test
+        return loss_cv_train, loss_cv_validation

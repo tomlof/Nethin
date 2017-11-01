@@ -19,13 +19,14 @@ import tensorflow as tf
 import keras.backend as K
 from keras.engine.topology import _to_snake_case as to_snake_case
 
-__all__ = ["with_device", "Helper", "to_snake_case"]
+__all__ = ["with_device", "Helper", "to_snake_case",
+           "normalize_object", "normalize_list", "normalize_str"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
 
 
-def with_device(device, function, *args, **kwargs):
+def with_device(__device, function, *args, **kwargs):
     """Run a given function (with given arguments) on a particular device.
 
     Parameters
@@ -45,10 +46,10 @@ def with_device(device, function, *args, **kwargs):
     kwargs : list, optional
         The list of keyword arguments to ``function``.
     """
-    if device is None:
+    if __device is None:
         ret = function(*args, **kwargs)
     else:
-        with tf.device(device):
+        with tf.device(__device):
             ret = function(*args, **kwargs)
 
     return ret
@@ -270,6 +271,154 @@ def deserialize_array(string):
     array = array.reshape(shape)
 
     return array
+
+
+def normalize_object(obj, n, name):
+    """Transforms a single object or iterable of objects into an object tuple.
+
+    Parameters
+    ----------
+    obj : object
+        The value to validate. An object, or any iterable of objects. Can be
+        anything, but note that tuples and other iterables will only be checked
+        that they have the length ``n``, and will thus not be normalised.
+
+    n : int
+        The length of the tuple to return.
+
+    name : str
+        The name of the argument being validated, e.g. "activations" or
+        "optimizers". This is only used to format error messages.
+    """
+    n = max(1, int(n))
+
+    if isinstance(obj, str):
+        return (obj,) * n
+
+    if hasattr(obj, "__iter__"):
+        try:
+            obj = tuple(obj)
+        except TypeError:
+            raise ValueError('The "' + name + '" argument must be a tuple '
+                             'of ' + str(n) + ' integers. Received: ' +
+                             str(obj))
+
+        if len(obj) != n:
+            raise ValueError('The "' + name + '" argument must be a tuple '
+                             'of ' + str(n) + ' integers. Received: ' +
+                             str(obj))
+    else:
+        return (obj,) * n
+
+    return obj
+
+
+def normalize_list(lst, n, name):
+    """Transforms a single list or iterable of lists into a tuple of lists.
+
+    Parameters
+    ----------
+    lst : list or iterable of lists
+        The value to validate. A list, or any iterable of lists. If a list,
+        will generate a tuple of ``n`` shallow copies of that lists.
+
+    n : int
+        The length of the tuple to return.
+
+    name : str
+        The name of the argument being validated, e.g. "activations" or
+        "optimizers". This is only used to format error messages.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> utils.normalize_list([1, 2, 3], 2, "list_input2")
+    [[1, 2, 3], [1, 2, 3]]
+    >>> utils.normalize_list([1, 2, 3], 3, "list_input3")
+    [[1, 2, 3], [1, 2, 3], [1, 2, 3]]
+    >>> utils.normalize_list(([1], [2], [3]), 3, "tuple_input")
+    ([1], [2], [3])
+    """
+    n = max(1, int(n))
+
+    if isinstance(lst, list):
+        return [list(lst) for i in range(n)]
+
+    try:
+        lst_tuple = tuple(lst)
+    except TypeError:
+        raise ValueError('The "' + name + '" argument must be a tuple '
+                         'of ' + str(n) + ' integers. Received: ' +
+                         str(lst))
+
+    if len(lst_tuple) != n:
+        raise ValueError('The "' + name + '" argument must be a tuple '
+                         'of ' + str(n) + ' integers. Received: ' +
+                         str(lst))
+
+    for i in range(len(lst_tuple)):
+        if not isinstance(lst_tuple[i], list):
+            raise ValueError('The "' + name + '" argument must be a tuple '
+                             'of ' + str(n) + ' lists. Received: ' +
+                             str(lst) + ' including element ' +
+                             str(lst_tuple[i]) + ' of type ' +
+                             str(type(lst_tuple[i])))
+
+    return lst_tuple
+
+
+def normalize_str(value, n, name):
+    """Transforms a single str or iterable of str into a tuple of str.
+
+    Parameters
+    ----------
+    value : str or iterable of str
+        The value to validate. A str, or any iterable of str. If a str, will
+        generate a tuple of ``n`` copies of that str.
+
+    n : int
+        The length of the tuple to return.
+
+    name : str
+        The name of the argument being validated, e.g. "activations" or
+        "optimizers". This is only used to format error messages.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> utils.normalize_str("a", 2, "str_input")
+    ('a', 'a')
+    >>> utils.normalize_str(["a", "b"], 2, "list_input")
+    ('a', 'b')
+    >>> utils.normalize_str(("a", "c"), 2, "tuple_input")
+    ('a', 'c')
+    """
+    n = max(1, int(n))
+
+    if isinstance(value, str):
+        return (value,) * n
+
+    try:
+        value_tuple = tuple(value)
+    except TypeError:
+        raise ValueError('The "' + name + '" argument must be a tuple '
+                         'of ' + str(n) + ' str. Received: ' +
+                         str(value))
+
+    if len(value_tuple) != n:
+        raise ValueError('The "' + name + '" argument must be a tuple '
+                         'of ' + str(n) + ' integers. Received: ' +
+                         str(value))
+
+    for i in range(len(value_tuple)):
+        if not isinstance(value_tuple[i], str):
+            raise ValueError('The "' + name + '" argument must be a tuple '
+                             'of ' + str(n) + ' strings. Received: ' +
+                             str(value) + ' including element ' +
+                             str(value_tuple[i]) + ' of type ' +
+                             str(type(value_tuple[i])))
+
+    return value_tuple
 
 
 if __name__ == "__main__":

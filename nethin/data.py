@@ -13,11 +13,15 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 import os
 import re
 import abc
+import datetime
+
 import numpy as np
 from six import with_metaclass
 from scipy.misc import imread, imresize
 
 from keras.utils import conv_utils
+
+import nethin
 
 try:
     from collections import Generator
@@ -33,7 +37,8 @@ except (ImportError):
 
 __all__ = ["BaseGenerator",
            "ImageGenerator", "ArrayGenerator",
-           "Dicom3DGenerator", "DicomGenerator"]
+           "Dicom3DGenerator", "DicomGenerator",
+           "Dicom3DSaver"]
 
 
 if _HAS_GENERATOR:
@@ -1405,3 +1410,127 @@ class DicomGenerator(BaseGenerator):
                     return_images.append(image)
 
         return return_images
+
+
+class Dicom3DSaver(object):
+
+    def __init__(self, path):
+
+        self.path = str(path)
+
+    def save(self, images, image_name, slice_name=None, tags=dict()):
+
+        if not isinstance(images, dict) or len(images) == 0:
+            raise ValueError('The "images" must be a dict, mapping channel '
+                             'names to numpy arrays.')
+
+        image = images[list(images.keys())[0]]
+        if len(image.shape) != 3 and len(image.shape) != 4:
+            raise ValueError('The "images" must have shape (B, R, C) or '
+                             '(B, R, C, 1).')
+        batch_dim = image.shape[0]
+
+        image_name = str(image_name)
+
+        if slice_name is None:
+            num_digits = int(np.log10(batch_dim)) + 1
+            slice_name = "Image%%0%dd.dcm" % num_digits
+        else:
+            slice_name = str(slice_name)
+            try:
+                slice_name % (1,)
+            except TypeError:
+                raise ValueError('The "slice_name" must contain an integer '
+                                 'formatter ("%d").')
+
+        if not isinstance(tags, dict):
+            raise ValueError('The "tags" must be a dict.')
+        for tag in tags.keys():
+            if not isinstance(tag, dicom.tag.Tag):
+                raise ValueError('The keys of "tags" must be of type '
+                                 '"Tag".')
+
+        if not os.path.exists(self.path):
+            os.mkdir(self.path)
+
+        image_dir = os.path.join(self.path, image_name)
+        if not os.path.exists(image_dir):
+            os.mkdir(image_dir)
+
+        uid = 0
+        channel_id = 0
+        for channel in images.keys():
+
+            image = images[channel]
+
+            intercept = np.min(image)
+            image = image - intercept
+            max_value = np.max(image)
+            bits_stored = 16
+            dicom_max_value = int(2**bits_stored - 1)
+            if max_value <= dicom_max_value:
+                slope = 1.0
+            else:
+                slope = float(dicom_max_value) / max_value
+                image = image / slope
+            image = np.round(image).astype(np.int16)
+
+            if np.random.rand() < 0.5:
+                patient_name = "Doe^John"
+            else:
+                patient_name = "Doe^Jane"
+
+            for slice_i in range(batch_dim):
+
+                filename = os.path.join(image_dir, slice_name % (slice_i,))
+
+                file_meta = dicom.dataset.Dataset()
+                file_meta.MediaStorageSOPClassUID = "CT Image Storage"
+                file_meta.MediaStorageSOPInstanceUID = "1.%d.%d.%d" \
+                                                       % (channel_id,
+                                                          slice_i,
+                                                          uid)
+                uid += 1
+                file_meta.ImplementationClassUID = "2.3.7.6.1.2.%s" \
+                                                   % (nethin.__version__,)
+
+                data = dicom.dataset.FileDataset(filename, {},
+                                                 file_meta=file_meta,
+                                                 preamble=b"\0" * 128)
+                data.PatientName = patient_name
+                data.PatientID = image_name
+
+                data.is_little_endian = True
+                data.is_implicit_VR = True
+
+                dt = datetime.datetime.now()
+                data.ContentDate = dt.strftime('%Y%m%d')
+                data.ContentTime = dt.strftime('%H%M%S.%f')  # Long format with micro seconds
+
+                data.InstanceNumber = slice_i
+                data.RescaleIntercept = intercept
+                data.RescaleSlope = slope
+                # data.RescaleType = "HU"
+                if len(image.shape) == 3:
+                    data.PixelData = image[slice_i, :, :].tostring()
+                else:
+                    data.PixelData = image[slice_i, :, :, 0].tostring()
+
+                data.Rows = image.shape[1]
+                data.Columns = image.shape[2]
+                data.SamplesPerPixel = 1
+                data.PhotometricInterpretation = "MONOCHROME2"
+                data.PlanarConfiguration = 0
+                data.BitsAllocated = bits_stored  # 16
+                data.BitsStored = bits_stored  # 16
+                data.HighBit = bits_stored - 1  # 15
+
+                data.PixelRepresentation = 0  # Unsigned
+                data.NumberOfFrames = 1
+
+                for tag in tags.keys():
+                    data[tag] = tags[tag]
+
+                data.save_as(filename)
+
+            channel_id += 1

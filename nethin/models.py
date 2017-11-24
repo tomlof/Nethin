@@ -37,9 +37,10 @@ from nethin.utils import with_device, Helper, to_snake_case
 import nethin.utils as utils
 import nethin.padding as padding
 import nethin.layers as layers
+import nethin.losses as losses
 
 __all__ = ["BaseModel",
-           "UNet"]
+           "ConvolutionalNetwork", "FullyConvolutionalNetwork", "UNet", "GAN"]
 
 
 class BaseModel(with_metaclass(abc.ABCMeta, object)):
@@ -90,6 +91,10 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
     def _generate_model(self):
         raise NotImplementedError('"_generate_model" has not been '
                                   'specialised.')
+
+    def __call__(self, inputs):
+
+        return self.model(inputs)
 
     def get_model(self):
 
@@ -634,6 +639,504 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
                                  x)
 
 
+class ConvolutionalNetwork(BaseModel):
+    """Generates a standard ConvNet architechture with Conv + BN + ReLU
+    + Maxpool layers.
+
+    Parameters
+    ----------
+    input_shape : tuple of ints, length 3
+        The shape of the input data, excluding the batch dimension.
+
+    num_filters : tuple of int, optional
+        The number of convolution filters in each convolution layer. Default is
+        ``(64, 64, 64, 64, 64)``, i.e. with five layers.
+
+    filter_sizes : tuple of int, optional
+        The size of the convolution filters in each convolution layer. Must
+        have the same length as ``num_filters``. Default is ``(3, 3, 3, 3,
+        3)``, i.e. with five layers.
+
+    subsample : tuple of bool, optional
+        Whether or not to perform subsampling at each of the layers. Must have
+        the same length as ``num_filters``. Default is ``(True, True, True,
+        True, True)``, which means to subsample after each convolution layer's
+        activation function.
+
+    activations : str or tuple of str or Activation, optional
+        The activations to use in each subsampling path. If a single str or
+        Layer, the same activation will be used for all layers. If a tuple,
+        then it must have the same length as ``num_conv_layers``. Default
+        is "relu".
+
+    dense_sizes : tuple of int, optional
+        The number of dense layers following the convolution. Default is (1,),
+        which means to output a single value.
+
+    output_activation : str or Activation, optional
+        The activation to use for the network output. Default is "sigmoid".
+
+    use_batch_normalization : bool, optional
+        Whether or not to use batch normalization after each convolution in the
+        encoding part. Default is True, use batch normalization.
+
+    use_dropout : bool, optional
+        Whether or not to use dropout on the dense layers. Default is True, use
+        dropout.
+
+    dropout_rate : float, optional
+        Float in [0, 1]. The dropout rate, if dropout is used. Default is 0.5.
+
+    use_maxpool : bool, optional
+        Whether or not to use maxpooling instead of strided convolutions when
+        subsampling. Default is True, do not use maxpooling.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually "/gpu:0"). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is "ConvolutionalNetwork".
+
+    Examples
+    --------
+    >>> import nethin
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.set_random_seed(42)
+    >>>
+    >>> input_shape = (128, 128, 1)
+    >>> output_shape = (128, 128, 1)
+    >>> num_conv_layers = (2, 1)
+    >>> num_filters = (32, 64)
+    >>> filter_sizes = 3
+    >>> activations = "relu"
+    >>> use_upconvolution = True
+    >>> use_deconvolutions = True
+    >>> data_format = None
+    >>>
+    >>> X = np.random.randn(*input_shape)
+    >>> X = X[np.newaxis, ...]
+    >>>
+    >>> model = nethin.models.UNet(input_shape=input_shape,
+    ...                            output_channels=output_shape[-1],
+    ...                            num_conv_layers=num_conv_layers,
+    ...                            num_filters=num_filters,
+    ...                            filter_sizes=filter_sizes,
+    ...                            activations=activations,
+    ...                            use_upconvolution=use_upconvolution,
+    ...                            use_deconvolutions=use_deconvolutions,
+    ...                            data_format=data_format)
+    >>> model.input_shape
+    (128, 128, 1)
+    >>> model.output_channels
+    1
+    >>> model.compile(optimizer="Adam", loss="mse")
+    >>> X.shape
+    (1, 128, 128, 1)
+    >>> Y = model.predict_on_batch(X)
+    >>> Y.shape
+    (1, 128, 128, 1)
+    >>> np.abs(np.sum(Y - X) - 1502.14844) < 5e-4
+    True
+    """
+    def __init__(self,
+                 input_shape,
+                 num_filters=(64, 64, 64, 64, 64),
+                 filter_sizes=(3, 3, 3, 3, 3),
+                 subsample=(True, True, True, True, True),
+                 activations="relu",
+                 dense_sizes=(1,),
+                 dense_activations=("sigmoid",),
+                 use_batch_normalization=True,
+                 use_dropout=True,
+                 dropout_rate=0.5,
+                 use_maxpool=True,
+                 data_format=None,
+                 device=None,
+                 name="ConvolutionalNetwork"):
+
+        super(ConvolutionalNetwork, self).__init__(
+                "nethin.models.ConvolutionalNetwork",
+                data_format=data_format,
+                device=device,
+                name=name)
+
+        self.input_shape = tuple([int(s) for s in input_shape])
+
+        if len(num_filters) < 1:
+            raise ValueError("``num_conv_layers`` must have length at least "
+                             "1.")
+        else:
+            self.num_filters = tuple(num_filters)
+
+        self.filter_sizes = tuple(filter_sizes)
+        assert(len(self.num_filters) == len(self.filter_sizes))
+
+        self.subsample = tuple([bool(s) for s in subsample])
+        assert(len(self.num_filters) == len(self.subsample))
+
+        if isinstance(activations, str) or activations is None:
+
+            activations = [self._with_device(Activation, activations)
+                           for i in range(len(self.num_filters))]
+            self.activations = tuple(activations)
+
+        if isinstance(activations, Activation):
+
+            raise ValueError("May not be able to reuse the activation for "
+                             "each layer. Pass a tuple with the activations "
+                             "for each layer instead.")
+
+        elif len(activations) != len(self.num_filters):
+            raise ValueError("``activations`` should have the same length as "
+                             "``num_conv_layers``.")
+
+        elif isinstance(activations, (list, tuple)):
+
+            _activations = [None] * len(activations)
+            for i in range(len(activations)):
+                if isinstance(activations[i], str) or activations[i] is None:
+                    _activations[i] = self._with_device(Activation, activations[i])
+                else:
+                    _activations[i] = activations[i]
+
+            self.activations = tuple(_activations)
+
+        else:
+            raise ValueError("``activations`` must be a str, or a tuple of "
+                             "str or ``Activation``.")
+
+        self.dense_sizes = tuple([int(s) for s in dense_sizes])
+
+        if isinstance(dense_activations, str):
+            _activations = [self._with_device(Activation, dense_activations)
+                            for i in range(len(self.dense_sizes))]
+            self.dense_activations = tuple(_activations)
+
+        elif len(dense_activations) != len(self.dense_sizes):
+            raise ValueError("``dense_activations`` should have the same "
+                             "length as `dense_sizes``.")
+
+        elif isinstance(dense_activations, (list, tuple)):
+
+            _activations = [None] * len(dense_activations)
+            for i in range(len(dense_activations)):
+                _activations[i] = self._with_device(Activation,
+                                                    dense_activations[i])
+            self.dense_activations = tuple(_activations)
+
+        else:
+            raise ValueError("``dense_activations`` must be a str, or a tuple "
+                             "of str or ``Activation``.")
+
+        self.use_batch_normalization = bool(use_batch_normalization)
+
+        if isinstance(use_dropout, bool):
+            do = [bool(use_dropout) for i in range(len(self.dense_sizes))]
+            self.use_dropout = tuple(do)
+
+        elif len(use_dropout) != len(self.dense_sizes):
+            raise ValueError("``use_dropout`` should have the same length as "
+                             "`dense_sizes``.")
+
+        elif isinstance(use_dropout, (list, tuple)):
+
+            do = [bool(use_dropout[i]) for i in range(len(use_dropout))]
+            self.use_dropout = tuple(do)
+
+        else:
+            raise ValueError("``use_dropout`` must be a str, or a tuple of "
+                             "str or ``Activation``.")
+
+        self.dropout_rate = max(0.0, min(float(dropout_rate), 1.0))
+
+        self.use_maxpool = bool(use_maxpool)
+
+        if self.data_format == "channels_last":
+            self._axis = 3
+        else:  # data_format == "channels_first":
+            self._axis = 1
+
+        self.model = self._with_device(self._generate_model)
+
+    def _generate_model(self):
+
+        inputs = Input(shape=self.input_shape)
+        x = inputs
+
+        # Build the network
+        for i in range(len(self.num_filters)):
+
+            num_filters_i = self.num_filters[i]
+            filter_size_i = self.filter_sizes[i]
+            activation_i = self.activations[i]
+            subsample_i = self.subsample[i]
+
+            x = Convolution2D(num_filters_i,
+                              (filter_size_i, filter_size_i),
+                              strides=(1, 1),
+                              padding="same",
+                              data_format=self.data_format)(x)
+            if self.use_batch_normalization:
+                x = BatchNormalization(axis=self._axis)(x)
+            x = activation_i(x)
+
+            if subsample_i:
+                if self.use_maxpool:
+                    x = MaxPooling2D(pool_size=(2, 2),
+                                     strides=(2, 2),
+                                     padding="same",
+                                     data_format=self.data_format)(x)
+                else:
+                    x = Convolution2D(num_filters_i,
+                                      (3, 3),
+                                      strides=(2, 2),
+                                      padding="same",
+                                      data_format=self.data_format)(x)
+
+        if len(self.dense_sizes) > 0:
+            x = Flatten()(x)
+
+            for i in range(len(self.dense_sizes)):
+                size_i = self.dense_sizes[i]
+                activation_i = self.dense_activations[i]
+                use_dropout_i = self.use_dropout[i]
+
+                x = Dense(size_i)(x)
+                x = activation_i(x)
+
+                if use_dropout_i:
+                    x = Dropout(self.dropout_rate)(x)
+
+        outputs = x
+
+        # Create model
+        model = Model(inputs, outputs, name=self.name)
+
+        return model
+
+
+class FullyConvolutionalNetwork(BaseModel):
+    """Generates a standard FCN architechture with Conv + BN + ReLU layers.
+
+    Parameters
+    ----------
+    input_shape : tuple of ints, length 3
+        The shape of the input data, excluding the batch dimension.
+
+    output_channels : int
+        The number of output channels of the network.
+
+    num_filters : tuple of int, optional
+        The number of convolution filters in each convolution layer. Default is
+        ``(64, 64, 64, 64, 64)``, i.e. with five layers.
+
+    filter_sizes : tuple of int, optional
+        The size of the convolution filters in each convolution layer. Must
+        have the same length as ``num_filters``. Default is ``(3, 3, 3, 3,
+        3)``, i.e. with five layers.
+
+    activations : str or tuple of str or Activation, optional
+        The activations to use in each subsampling path. If a single str or
+        Layer, the same activation will be used for all layers. If a tuple,
+        then it must have the same length as ``num_conv_layers``. Default
+        is "relu".
+
+    use_batch_normalization : bool or tuple of bool, optional
+        Whether or not to use batch normalization after each convolution in the
+        encoding part. Default is True, use batch normalization for all layers.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually "/gpu:0"). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is "FullyConvolutionalNetwork".
+
+    Examples
+    --------
+    >>> import nethin
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.set_random_seed(42)
+    >>>
+    >>> input_shape = (128, 128, 1)
+    >>> output_shape = (128, 128, 1)
+    >>> num_conv_layers = (2, 1)
+    >>> num_filters = (32, 64)
+    >>> filter_sizes = 3
+    >>> activations = "relu"
+    >>> use_upconvolution = True
+    >>> use_deconvolutions = True
+    >>> data_format = None
+    >>>
+    >>> X = np.random.randn(*input_shape)
+    >>> X = X[np.newaxis, ...]
+    >>>
+    >>> model = nethin.models.UNet(input_shape=input_shape,
+    ...                            output_channels=output_shape[-1],
+    ...                            num_conv_layers=num_conv_layers,
+    ...                            num_filters=num_filters,
+    ...                            filter_sizes=filter_sizes,
+    ...                            activations=activations,
+    ...                            use_upconvolution=use_upconvolution,
+    ...                            use_deconvolutions=use_deconvolutions,
+    ...                            data_format=data_format)
+    >>> model.input_shape
+    (128, 128, 1)
+    >>> model.output_channels
+    1
+    >>> model.compile(optimizer="Adam", loss="mse")
+    >>> X.shape
+    (1, 128, 128, 1)
+    >>> Y = model.predict_on_batch(X)
+    >>> Y.shape
+    (1, 128, 128, 1)
+    >>> np.abs(np.sum(Y - X) - 1502.14844) < 5e-4
+    True
+    """
+    def __init__(self,
+                 input_shape,
+                 output_channels,
+                 num_filters=(64, 64, 64, 64, 64),
+                 filter_sizes=(3, 3, 3, 3, 3),
+                 activations="relu",
+                 use_batch_normalization=True,
+                 data_format=None,
+                 device=None,
+                 name="FullyConvolutionalNetwork"):
+
+        super(FullyConvolutionalNetwork, self).__init__(
+                "nethin.models.FullyConvolutionalNetwork",
+                data_format=data_format,
+                device=device,
+                name=name)
+
+        self.input_shape = tuple([int(s) for s in input_shape])
+        self.output_channels = int(output_channels)
+
+        if len(num_filters) < 1:
+            raise ValueError("``num_filters`` must have length at least 1.")
+        else:
+            self.num_filters = tuple(num_filters)
+
+        self.filter_sizes = tuple(filter_sizes)
+
+        assert(len(self.num_filters) == len(self.filter_sizes))
+
+        if isinstance(activations, str) or activations is None:
+
+            activations = [self._with_device(Activation, activations)
+                           for i in range(len(self.num_filters))]
+            self.activations = tuple(activations)
+
+        if isinstance(activations, Activation):
+
+            raise ValueError("May not be able to reuse the activation for "
+                             "each layer. Pass a tuple with the activations "
+                             "for each layer instead.")
+
+        elif len(activations) != len(self.num_filters):
+            raise ValueError("``activations`` should have the same length as "
+                             "``num_conv_layers``.")
+
+        elif isinstance(activations, (list, tuple)):
+
+            _activations = [None] * len(activations)
+            for i in range(len(activations)):
+                if isinstance(activations[i], str) or activations[i] is None:
+                    _activations[i] = self._with_device(Activation, activations[i])
+                else:
+                    _activations[i] = activations[i]
+
+            self.activations = tuple(_activations)
+
+        else:
+            raise ValueError("``activations`` must be a str, or a tuple of "
+                             "str or ``Activation``.")
+
+        if isinstance(use_batch_normalization, bool):
+            use_batch_normalization = [use_batch_normalization] \
+                    * len(self.num_filters)
+            self.use_batch_normalization = tuple(use_batch_normalization)
+
+        elif len(use_batch_normalization) != len(self.num_filters):
+            raise ValueError("``use_batch_normalization`` should have the "
+                             "same length as ``num_filters``.")
+
+        elif isinstance(use_batch_normalization, (list, tuple)):
+
+            use_bn = [None] * len(use_batch_normalization)
+            for i in range(len(use_batch_normalization)):
+                use_bn[i] = bool(use_batch_normalization[i])
+            self.use_batch_normalization = tuple(use_bn)
+
+        if self.data_format == "channels_last":
+            self._axis = 3
+        else:  # data_format == "channels_first":
+            self._axis = 1
+
+        self.model = self._with_device(self._generate_model)
+
+    def _generate_model(self):
+
+        inputs = Input(shape=self.input_shape)
+        x = inputs
+
+        # Build the network
+        for i in range(len(self.num_filters)):
+
+            num_filters = self.num_filters[i]
+            filter_size = self.filter_sizes[i]
+            activation_function = self.activations[i]
+            use_batch_normalization = self.use_batch_normalization[i]
+
+            x = Convolution2D(num_filters,
+                              (filter_size, filter_size),
+                              strides=(1, 1),
+                              padding="same",
+                              data_format=self.data_format)(x)
+            if use_batch_normalization:
+                x = BatchNormalization(axis=self._axis)(x)
+            x = activation_function(x)
+
+        # Final convolution to generate the requested output number of channels
+        x = Convolution2D(self.output_channels,
+                          (1, 1),  # Filter size
+                          strides=(1, 1),
+                          padding="same",
+                          data_format=self.data_format)(x)
+        outputs = x
+
+        # Create model
+        model = Model(inputs, outputs, name=self.name)
+
+        return model
+
+
 class UNet(BaseModel):
     """Generates the U-Net model by Ronneberger et al. (2015) [1]_.
 
@@ -1155,7 +1658,7 @@ class GAN(BaseModel):
     >>> data_shape = (28, 28, 1)
     >>> # batch_size = 256
     >>> batch_size = 100
-    >>> device = "/cpu:0"
+    >>> device = "/device:CPU:0"
     >>> def discr():
     ...     D = Sequential()
     ...     D.add(Convolution2D(64, (5, 5), strides=2, input_shape=data_shape,
@@ -1211,7 +1714,7 @@ class GAN(BaseModel):
     ...             metrics=["accuracy"])
     >>> loss_a = []
     >>> loss_d = []
-    >>> # for it in range(1000):
+    >>> # for it in range(5000):
     >>> im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
     >>> loss = gan.train_on_batch(im_real)
     >>> loss_d.append(loss[0][1])

@@ -19,40 +19,11 @@ import tensorflow as tf
 import keras.backend as K
 from keras.engine.topology import _to_snake_case as to_snake_case
 
-__all__ = ["with_device", "Helper", "to_snake_case",
+__all__ = ["Helper", "with_device", "to_snake_case",
            "normalize_object", "normalize_list", "normalize_str"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
-
-
-def with_device(__device, function, *args, **kwargs):
-    """Run a given function (with given arguments) on a particular device.
-
-    Parameters
-    ----------
-    device : None or str
-        The device to run/construct the function/object on. None means to
-        run/construct it on the default device (usually "/gpu:0"). See
-        ``nethin.utils.Helper.get_devices()`` for the list of your available
-        devices.
-
-    function
-        The function or class to run/construct.
-
-    args : list, optional
-        The list of arguments to ``function``.
-
-    kwargs : list, optional
-        The list of keyword arguments to ``function``.
-    """
-    if __device is None:
-        ret = function(*args, **kwargs)
-    else:
-        with tf.device(__device):
-            ret = function(*args, **kwargs)
-
-    return ret
 
 
 class TensorflowHelper(object):
@@ -208,6 +179,35 @@ class TensorflowHelper(object):
 
 
 Helper = TensorflowHelper
+
+
+def with_device(__device, function, *args, **kwargs):
+    """Run a given function (with given arguments) on a particular device.
+
+    Parameters
+    ----------
+    device : None or str
+        The device to run/construct the function/object on. None means to
+        run/construct it on the default device (usually "/gpu:0"). See
+        ``nethin.utils.Helper.get_devices()`` for the list of your available
+        devices.
+
+    function
+        The function or class to run/construct.
+
+    args : list, optional
+        The list of arguments to ``function``.
+
+    kwargs : list, optional
+        The list of keyword arguments to ``function``.
+    """
+    if __device is None:
+        ret = function(*args, **kwargs)
+    else:
+        with tf.device(__device):
+            ret = function(*args, **kwargs)
+
+    return ret
 
 
 def serialize_array(array):

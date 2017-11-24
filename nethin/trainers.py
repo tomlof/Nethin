@@ -14,8 +14,13 @@ import abc
 from six import with_metaclass
 import gc
 import time
+import pickle
 
 import numpy as np
+
+from tensorflow.python.framework.errors_impl import ResourceExhaustedError
+
+import keras.backend as K
 
 import nethin.utils as utils
 
@@ -33,8 +38,8 @@ class BasicTrainer(object):
                  input_channels,
                  output_channels,
                  generator_train,
-                 generator_validation,
-                 generator_test,
+                 generator_validation=None,
+                 generator_test=None,
                  max_epochs=100,
                  max_iter_train=None,
                  max_iter_validation=None,
@@ -70,10 +75,12 @@ class BasicTrainer(object):
 
         self.verbose = bool(verbose)
 
+        self.model_ = None
+
     def train(self):
         """Perform a full training program on the given model.
         """
-        model = self.model_factory()
+        self.model_ = self.model_factory()
 
         restart_train = True
         restart_validation = True
@@ -95,7 +102,7 @@ class BasicTrainer(object):
                     inputs = images[..., :self.input_channels]
                     outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
 
-                    loss = model.train_on_batch(inputs, outputs)
+                    loss = self.model_.train_on_batch(inputs, outputs)
 
                     loss_batch_train.append(loss)
 
@@ -113,65 +120,74 @@ class BasicTrainer(object):
                 restart_train = True
             loss_train.append(loss_batch_train)
 
-            batch_it_validation = 0
-            loss_batch_validation = []
-            if restart_validation:
-                generator_validation = self.generator_validation()
-                restart_validation = False
+            if self.generator_validation is not None:
+
+                batch_it_validation = 0
+                loss_batch_validation = []
+                if restart_validation:
+                    generator_validation = self.generator_validation()
+                    restart_validation = False
+                try:
+                    while True:
+                        images = np.array(next(generator_validation),
+                                          dtype=np.float32)
+
+                        inputs = images[..., :self.input_channels]
+                        outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
+
+                        loss = self.model_.test_on_batch(inputs, outputs)
+
+                        loss_batch_validation.append(loss)
+
+                        if self.verbose:
+                            print("validation it: %d, batch: %d, loss: %s"
+                                  % (it, batch_it_validation, str(loss)))
+
+                        batch_it_validation += 1
+
+                        if self.max_iter_validation is not None:
+                            if batch_it_validation >= self.max_iter_validation:
+                                break
+
+                except (StopIteration) as e:
+                    restart_validation = True
+                loss_validation.append(loss_batch_validation)
+
+        if self.generator_test is not None:
+            batch_it_test = 0
+            loss_test = []
+            generator_test = self.generator_test()
             try:
                 while True:
-                    images = np.array(next(generator_validation),
-                                      dtype=np.float32)
+                    images = np.array(next(generator_test), dtype=np.float32)
 
                     inputs = images[..., :self.input_channels]
                     outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
 
-                    loss = model.test_on_batch(inputs, outputs)
+                    loss = self.model_.test_on_batch(inputs, outputs)
 
-                    loss_batch_validation.append(loss)
+                    loss_test.append(loss)
 
                     if self.verbose:
-                        print("validation it: %d, batch: %d, loss: %s"
-                              % (it, batch_it_validation, str(loss)))
+                        print("test batch: %d, loss: %s"
+                              % (batch_it_test, str(loss)))
 
-                    batch_it_validation += 1
+                    batch_it_test += 1
 
-                    if self.max_iter_validation is not None:
-                        if batch_it_validation >= self.max_iter_validation:
+                    if self.max_iter_test is not None:
+                        if batch_it_test >= self.max_iter_test:
                             break
 
             except (StopIteration) as e:
-                restart_validation = True
-            loss_validation.append(loss_batch_validation)
+                pass
 
-        batch_it_test = 0
-        loss_test = []
-        generator_test = self.generator_test()
-        try:
-            while True:
-                images = np.array(next(generator_test), dtype=np.float32)
+        ret_list = [loss_train]
+        if self.generator_validation is not None:
+            ret_list.append(loss_validation)
+        if self.generator_test is not None:
+            ret_list.append(loss_test)
 
-                inputs = images[..., :self.input_channels]
-                outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
-                loss = model.test_on_batch(inputs, outputs)
-
-                loss_test.append(loss)
-
-                if self.verbose:
-                    print("test batch: %d, loss: %s"
-                          % (batch_it_test, str(loss)))
-
-                batch_it_test += 1
-
-                if self.max_iter_test is not None:
-                    if batch_it_test >= self.max_iter_test:
-                        break
-
-        except (StopIteration) as e:
-            pass
-
-        return loss_train, loss_validation, loss_test
+        return tuple(ret_list)
 
 
 class CVTrainer(object):
@@ -190,7 +206,10 @@ class CVTrainer(object):
                  max_epochs=100,
                  max_iter_train=None,
                  max_iter_validation=None,
+                 save_intermediate=False,
                  verbose=False):
+
+        self._name = "CVTrainer"
 
         self.model_factory = model_factory
         self.input_channels = max(1, int(input_channels))
@@ -217,15 +236,32 @@ class CVTrainer(object):
         else:
             self.max_iter_validation = max_iter_validation
 
+        self.save_intermediate = bool(save_intermediate)
         self.verbose = bool(verbose)
 
     def train(self):
         """Perform a full training program on the given model.
         """
-        loss_cv_train = []
-        loss_cv_validation = []
+        self.loss_cv_train_ = []
+        self.loss_cv_validation_ = []
         for cv in range(self._cv_rounds):
-            model = self.model_factory()
+
+            self.model_ = None
+            for i in range(10):
+                try:
+                    self.model_ = self.model_factory()
+                    break
+                except (ResourceExhaustedError) as e:
+                    try:
+                        del self.model_
+                        K.clear_session()
+                    except:
+                        pass
+                    if cv > 0:
+                        gc.collect()
+                        time.sleep(1)
+                    else:
+                        raise e
 
             restart_train = True
             restart_validation = True
@@ -247,7 +283,7 @@ class CVTrainer(object):
                         inputs = images[..., :self.input_channels]
                         outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
 
-                        loss = model.train_on_batch(inputs, outputs)
+                        loss = self.model_.train_on_batch(inputs, outputs)
 
                         loss_batch_train.append(loss)
 
@@ -265,7 +301,7 @@ class CVTrainer(object):
                     restart_train = True
                 loss_train.append(loss_batch_train)
 
-                loss_cv_train.append(loss_train)
+                self.loss_cv_train_.append(loss_train)
 
                 batch_it_validation = 0
                 loss_batch_validation = []
@@ -280,7 +316,7 @@ class CVTrainer(object):
                         inputs = images[..., :self.input_channels]
                         outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
 
-                        loss = model.test_on_batch(inputs, outputs)
+                        loss = self.model_.test_on_batch(inputs, outputs)
 
                         loss_batch_validation.append(loss)
 
@@ -298,13 +334,20 @@ class CVTrainer(object):
                     restart_validation = True
                 loss_validation.append(loss_batch_validation)
 
-            loss_cv_validation.append(loss_validation)
+            self.loss_cv_validation_.append(loss_validation)
 
-            del model
+            if self.save_intermediate:
+                with open("%s_intermediate_%d.pkl" % (self._name, cv), "wb") as fp:
+                    pickle.dump((self.loss_cv_train_,
+                                 self.loss_cv_validation_),
+                                fp)
+
+            del self.model_
+            K.clear_session()
             gc.collect()
             if cv < self._cv_rounds - 1:
-                for i in range(4):
+                for i in range(6):
                     time.sleep(1)
                     gc.collect()
 
-        return loss_cv_train, loss_cv_validation
+        return self.loss_cv_train_, self.loss_cv_validation_

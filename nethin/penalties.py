@@ -44,6 +44,9 @@ class BasePenalty(with_metaclass(abc.ABCMeta, object)):
     def call(self, weights):
         raise NotImplementedError('"call" has not been specialised.')
 
+    def get_config(self):
+        return {"data_format": self.data_format}
+
 
 class TotalVariation2D(BasePenalty):
     """Corresponds to the total variation (TV) penalty for 2D images.
@@ -123,3 +126,9 @@ class TotalVariation2D(BasePenalty):
             outputs = self.gamma * weights[0, 0, 0, 0]
 
         return outputs
+
+    def get_config(self):
+        base_config = super(TotalVariation2D, self).get_config()
+        config =  {"gamma": self.gamma,
+                   "mean": self.mean}
+        return dict(list(base_config.items()) + list(config.items()))

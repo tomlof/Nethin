@@ -14,8 +14,7 @@ import abc
 from six import with_metaclass
 
 import keras.backend as K
-
-from nethin.utils import TensorflowHelper
+from keras.utils import conv_utils
 
 
 class BasePenalty(with_metaclass(abc.ABCMeta, object)):
@@ -34,7 +33,7 @@ class BasePenalty(with_metaclass(abc.ABCMeta, object)):
     """
     def __init__(self, data_format=None):
 
-        self.data_format = TensorflowHelper.check_data_format(data_format)
+        self.data_format = conv_utils.normalize_data_format(data_format)
 
     def __call__(self, weights):
 

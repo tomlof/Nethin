@@ -556,19 +556,20 @@ class Dicom3DGenerator(BaseGenerator):
         The subdirectories to extract files from below ``dir_path``. Every
         element of this list corresponds to an image.
 
-    channel_names : list of list of str
-        The inner lists corresponds to directory names or regular expressions
-        defining the names of the subdirectories under ``image_names`` that
-        corresponds to channels of this image. Every outer element of this list
-        corresponds to a channel of the images defined by ``image_names``. If
-        more than one directory name matches, only the first one found will be
-        used.
+    channel_names : list of str or list of str
+        The inner strings or lists corresponds to directory names or regular
+        expressions defining the names of the subdirectories under
+        ``image_names`` that corresponds to channels of this image. Every outer
+        element of this list corresponds to a channel of the images defined by
+        ``image_names``. The elements of the inner lists are alternative names
+        for the subdirectories. If more than one subdirectory name matches,
+        only the first one found will be used.
 
-    batch_size : int, optional
-        The number of images to return at each yield. Default is 1, return only
-        one image at the time. If there are not enough images to return in one
-        batch, the source directory is considered exhausted, and StopIteration
-        will be thrown.
+    batch_size : int or None, optional
+        The number of images to return at each yield. If None, all images will
+        be returned. If there are not enough images to return in one batch, the
+        source directory is considered exhausted, and StopIteration will be
+        thrown. Default is 1, which means to return only one image at the time.
 
     crop : tuple of int, length 2, optional
         A subimage size to crop randomly from the read image. If any images are
@@ -707,9 +708,21 @@ class Dicom3DGenerator(BaseGenerator):
 
         self.dir_path = str(dir_path)
         self.image_names = [str(name) for name in image_names]
-        self.channel_names = [[str(name) for name in channel]
-                              for channel in channel_names]
-        self.batch_size = max(1, int(batch_size))
+        
+        self.channel_names = []
+        for channel in channel_names:
+            if isinstance(channel, str):
+                self.channel_names.append([str(channel)])
+            elif isinstance(channel, (list, tuple)):
+                self.channel_names.append([str(name) for name in channel])
+            else:
+                raise ValueError('``channel_names`` must be a list of either '
+                                 'strings or lists of strings.')
+
+        if batch_size is None:
+            self.batch_size = batch_size
+        else:
+            self.batch_size = max(1, int(batch_size))
 
         if crop is None:
             self.crop = crop
@@ -789,6 +802,8 @@ class Dicom3DGenerator(BaseGenerator):
 
         self._average_num_slices = int(
                 (self._file_queue_len() / actual_pool_updates) + 0.5)
+
+        self._throw_stop_iteration = False
 
     def _read_next_image(self):
         """Extracts the file names for all channels of the next image.
@@ -986,8 +1001,14 @@ class Dicom3DGenerator(BaseGenerator):
 
         Return next yielded value or raise StopIteration.
         """
+        if (self.batch_size is None) and self._throw_stop_iteration:
+            self._throw_stop_iteration = False
+            self.throw(StopIteration)
+
         return_images = []
-        while len(return_images) < self.batch_size:
+        while (self.batch_size is None) \
+                or (len(return_images) < self.batch_size):
+
             if self.random_pool_size is None:
                 queue_lim = 1
             else:
@@ -1000,7 +1021,12 @@ class Dicom3DGenerator(BaseGenerator):
                 file_names = self._file_queue_pop()
             except (IndexError) as e:
                 if not update_done:  # Images not added, no images in queue
-                    self.throw(StopIteration)
+                    if (self.batch_size is None) \
+                            and (not self._throw_stop_iteration):
+                        self._throw_stop_iteration = True
+                        break
+                    else:
+                        self.throw(StopIteration)
 
             if file_names is not None:
                 images = self._read_image(file_names)

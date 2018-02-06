@@ -11,13 +11,15 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 import abc
+import json
 from six import with_metaclass
 
+import h5py
 import numpy as np
 
 import tensorflow as tf
 import keras.backend as K
-from keras.models import Sequential, Model
+from keras.models import Sequential, Model, load_model
 from keras.utils import conv_utils
 from keras.initializers import TruncatedNormal
 from keras.engine.topology import get_source_inputs
@@ -31,9 +33,10 @@ from keras.layers.convolutional import ZeroPadding2D
 from keras.layers import Input, Activation, Dropout, Dense, Flatten, Lambda
 from keras.layers import Concatenate, Add
 import keras.optimizers as optimizers
-from keras.optimizers import Optimizer, Adam
+from keras.optimizers import Optimizer, Adam, RMSprop
 
 from nethin.utils import with_device, Helper, to_snake_case
+import nethin.consts as consts
 import nethin.utils as utils
 import nethin.padding as padding
 import nethin.layers as layers
@@ -41,6 +44,34 @@ import nethin.losses as losses
 
 __all__ = ["BaseModel",
            "ConvolutionalNetwork", "FullyConvolutionalNetwork", "UNet", "GAN"]
+
+
+#def load_model(filepath, custom_objects=None, compile=True):
+#    """Loads a model saved via ``save_model``.
+#
+#    Parameters
+#    ----------
+#    filepath : str
+#        The path to the saved config file.
+#
+#    # Arguments
+#        filepath: String, path to the saved model.
+#        custom_objects: Optional dictionary mapping names
+#            (strings) to custom classes or functions to be
+#            considered during deserialization.
+#        compile: Boolean, whether to compile the model
+#            after loading.
+#    # Returns
+#        A Keras model instance. If an optimizer was found
+#        as part of the saved model, the model is already
+#        compiled. Otherwise, the model is uncompiled and
+#        a warning will be displayed. When `compile` is set
+#        to False, the compilation is omitted without any
+#        warning.
+#    # Raises
+#        ImportError: if h5py is not available.
+#        ValueError: In case of an invalid savefile.
+#    """
 
 
 class BaseModel(with_metaclass(abc.ABCMeta, object)):
@@ -100,6 +131,28 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
 
         return self.model
 
+    def get_config(self):
+        """Returns the config of the model.
+
+        A model config is a Python dictionary (serializable) containing the
+        configuration of a model. The same model can be reinstantiated later
+        (without its trained weights) from this configuration.
+
+        The config of a model does not include connectivity information, nor
+        the model class name. These are handled by `Container` (one layer of
+        abstraction above).
+
+        Returns
+        -------
+        config : dict
+            A Python dictionary containing the model configuration.
+        """
+        config = {"data_format": self.data_format,
+                  "device": self.device,
+                  "name": self.name}
+
+        return config
+
     def save(self, filepath, overwrite=True, include_optimizer=True):
         """Save the model to a single HDF5 file.
 
@@ -156,19 +209,21 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
         ...     outputs = Dense(1)(inputs)
         ...     model = Model(inputs, outputs)
         ...     model.compile("Adam", loss="MSE")
-        ...     model.predict_on_batch(X)
-        array([[[-0.44601449],
-                [-1.13214135],
-                [-0.87168205]]], dtype=float32)
+        ...     yhat = model.predict_on_batch(X)
+        ...     np.round(yhat, 6)
+        array([[[-0.446014],
+                [-1.132141],
+                [-0.871682]]], dtype=float32)
         >>> if not failed:
         ...     model.save(fn)  # Creates a temporary HDF5 file
         ...     del model  # Deletes the existing model
         ...     # Returns a compiled model identical to the previous one
         ...     model = load_model(fn)
-        ...     model.predict_on_batch(X)
-        array([[[-0.44601449],
-                [-1.13214135],
-                [-0.87168205]]], dtype=float32)
+        ...     yhat = model.predict_on_batch(X)
+        ...     np.round(yhat, 6)
+        array([[[-0.446014],
+                [-1.132141],
+                [-0.871682]]], dtype=float32)
         >>> if not failed:
         ...     try:
         ...         os.remove(fn)
@@ -235,6 +290,15 @@ class BaseModel(with_metaclass(abc.ABCMeta, object)):
             If h5py is not available.
         """
         self.model.load_weights(filepath, by_name=by_name)
+
+    def get_weights(self):
+        """Retrieves the weights of the model.
+
+        Returns
+        -------
+        A flat list of Numpy arrays.
+        """
+        return self.model.get_weights()
 
     def compile(self,
                 optimizer,
@@ -673,8 +737,9 @@ class ConvolutionalNetwork(BaseModel):
         The number of dense layers following the convolution. Default is (1,),
         which means to output a single value.
 
-    output_activation : str or Activation, optional
-        The activation to use for the network output. Default is "sigmoid".
+    dense_activations : str or Activation, optional
+        The activation to use for the dense layers and the network output.
+        Default is "sigmoid".
 
     use_batch_normalization : bool, optional
         Whether or not to use batch normalization after each convolution in the
@@ -689,7 +754,7 @@ class ConvolutionalNetwork(BaseModel):
 
     use_maxpool : bool, optional
         Whether or not to use maxpooling instead of strided convolutions when
-        subsampling. Default is True, do not use maxpooling.
+        subsampling. Default is True, use maxpooling.
 
     data_format : str, optional
         One of ``channels_last`` (default) or ``channels_first``. The ordering
@@ -717,38 +782,44 @@ class ConvolutionalNetwork(BaseModel):
     >>> tf.set_random_seed(42)
     >>>
     >>> input_shape = (128, 128, 1)
-    >>> output_shape = (128, 128, 1)
-    >>> num_conv_layers = (2, 1)
-    >>> num_filters = (32, 64)
-    >>> filter_sizes = 3
-    >>> activations = "relu"
-    >>> use_upconvolution = True
-    >>> use_deconvolutions = True
-    >>> data_format = None
+    >>> num_filters = (16, 16)
+    >>> filter_sizes = (3, 3)
+    >>> subsample = (True, True)
+    >>> activations = ("relu", "relu")
+    >>> dense_sizes = (1,)
+    >>> dense_activations = "sigmoid"
+    >>> use_batch_normalization = True
+    >>> use_dropout = True
+    >>> dropout_rate = 0.5
+    >>> use_maxpool = True
+    >>> data_format = "channels_last"
+    >>> device = "/device:CPU:0"
     >>>
     >>> X = np.random.randn(*input_shape)
     >>> X = X[np.newaxis, ...]
     >>>
-    >>> model = nethin.models.UNet(input_shape=input_shape,
-    ...                            output_channels=output_shape[-1],
-    ...                            num_conv_layers=num_conv_layers,
-    ...                            num_filters=num_filters,
-    ...                            filter_sizes=filter_sizes,
-    ...                            activations=activations,
-    ...                            use_upconvolution=use_upconvolution,
-    ...                            use_deconvolutions=use_deconvolutions,
-    ...                            data_format=data_format)
+    >>> model = nethin.models.ConvolutionalNetwork(input_shape=input_shape,
+    ...                                            num_filters=num_filters,
+    ...                                            filter_sizes=filter_sizes,
+    ...                                            subsample=subsample,
+    ...                                            activations=activations,
+    ...                                            dense_sizes=dense_sizes,
+    ...                                            dense_activations=dense_activations,
+    ...                                            use_batch_normalization=use_batch_normalization,
+    ...                                            use_dropout=use_dropout,
+    ...                                            dropout_rate=dropout_rate,
+    ...                                            use_maxpool=use_maxpool,
+    ...                                            data_format=data_format,
+    ...                                            device=device)
     >>> model.input_shape
     (128, 128, 1)
-    >>> model.output_channels
-    1
-    >>> model.compile(optimizer="Adam", loss="mse")
     >>> X.shape
     (1, 128, 128, 1)
+    >>> model.compile(optimizer="Adam", loss="mse")
     >>> Y = model.predict_on_batch(X)
     >>> Y.shape
-    (1, 128, 128, 1)
-    >>> np.abs(np.sum(Y - X) - 1502.14844) < 5e-4
+    (1, 1)
+    >>> np.abs(np.sum(Y - X) - 9986) < 1.0
     True
     """
     def __init__(self,
@@ -984,38 +1055,36 @@ class FullyConvolutionalNetwork(BaseModel):
     >>> tf.set_random_seed(42)
     >>>
     >>> input_shape = (128, 128, 1)
-    >>> output_shape = (128, 128, 1)
-    >>> num_conv_layers = (2, 1)
-    >>> num_filters = (32, 64)
-    >>> filter_sizes = 3
-    >>> activations = "relu"
-    >>> use_upconvolution = True
-    >>> use_deconvolutions = True
-    >>> data_format = None
+    >>> output_channels = 1
+    >>> num_filters = (16, 16)
+    >>> filter_sizes = (3, 3)
+    >>> activations = ("relu", "relu")
+    >>> use_batch_normalization = True
+    >>> data_format = "channels_last"
+    >>> device = "/device:CPU:0"
     >>>
     >>> X = np.random.randn(*input_shape)
     >>> X = X[np.newaxis, ...]
     >>>
-    >>> model = nethin.models.UNet(input_shape=input_shape,
-    ...                            output_channels=output_shape[-1],
-    ...                            num_conv_layers=num_conv_layers,
-    ...                            num_filters=num_filters,
-    ...                            filter_sizes=filter_sizes,
-    ...                            activations=activations,
-    ...                            use_upconvolution=use_upconvolution,
-    ...                            use_deconvolutions=use_deconvolutions,
-    ...                            data_format=data_format)
+    >>> model = nethin.models.FullyConvolutionalNetwork(input_shape=input_shape,
+    ...                                                 output_channels=output_channels,
+    ...                                                 num_filters=num_filters,
+    ...                                                 filter_sizes=filter_sizes,
+    ...                                                 activations=activations,
+    ...                                                 use_batch_normalization=use_batch_normalization,
+    ...                                                 data_format=data_format,
+    ...                                                 device=device)
     >>> model.input_shape
     (128, 128, 1)
     >>> model.output_channels
     1
-    >>> model.compile(optimizer="Adam", loss="mse")
     >>> X.shape
     (1, 128, 128, 1)
+    >>> model.compile(optimizer="Adam", loss="mse")
     >>> Y = model.predict_on_batch(X)
     >>> Y.shape
     (1, 128, 128, 1)
-    >>> np.abs(np.sum(Y - X) - 1502.14844) < 5e-4
+    >>> np.abs(np.sum(Y - X) - 2487) < 1.0
     True
     """
     def __init__(self,
@@ -1170,18 +1239,31 @@ class UNet(BaseModel):
         then it must have the same length as ``num_conv_layers``. Default
         is "relu".
 
+    use_downconvolution : bool, optional
+        If True, uses downsampling followed by a 2x2 convolution for spatial
+        downsampling. Default is False, which means to not use downconvolution.
+
     use_upconvolution : bool, optional
         The use of upsampling followed by a convolution can reduce artifacts
-        that appear when deconvolutions with ``stride > 1`` are used. When
-        ``use_upconvolution=False``, strided deconvolutions are used instead
-        unless ``use_maxunpooling=True``. Default is True, which means to use
-        upsampling followed by a 2x2 convolution (denoted "upconvolution" in
-        [1]_).
+        that appear when e.g. deconvolutions with ``stride > 1`` are used.
+        Default is True, which means to use upsampling followed by a 2x2
+        convolution (denoted "upconvolution" in [1]_).
+
+    use_strided_convolution : bool, optional
+        If True, uses strided convolution for downsampling. Default is False,
+        which means to not use strided convolutions.
+
+    use_strided_deconvolution : bool, optional
+        If True, uses strided deconvolution for upsampling. Default is False,
+        which means to not use strided deconvolutions.
+
+    use_maxpooling : bool, optional
+        If True, uses 2x2 maxpooling for downsampling. Default is True, which
+        means to use unpooling for downsampling.
 
     use_maxunpooling : bool, optional
-        If True, 2x2 unpooling will be used instead of upconvolution or strided
-        deconvolutions. Default is False, which means to use the value of
-        ``use_upconvolution`` to determine the upsampling procedure.
+        If True, uses 2x2 maxunpooling for upsampling. Default is False, which
+        means to not use unpooling.
 
     use_maxunpooling_mask : bool, optional
         If ``use_maxunpooling=True`` and  ``use_maxunpooling_mask=True``, then
@@ -1191,7 +1273,7 @@ class UNet(BaseModel):
 
     use_deconvolutions : bool, optional
         Use deconvolutions (transposed convolutinos) in the deconding part
-        instead of convolutions. This should have no practical difference,
+        instead of convolutions. This should have only small practical effect,
         since deconvolutions are also convolutions, but may be preferred in
         some cases. Default is False, do not use deconvolutions in the decoding
         part.
@@ -1211,7 +1293,7 @@ class UNet(BaseModel):
 
     device : str, optional
         A particular device to run the model on. Default is ``None``, which
-        means to run on the default device (usually "/gpu:0"). Use
+        means to run on the default device (usually the first GPU device). Use
         ``nethin.utils.Helper.get_device()`` to see available devices.
 
     name : str, optional
@@ -1263,7 +1345,7 @@ class UNet(BaseModel):
     >>> Y = model.predict_on_batch(X)
     >>> Y.shape
     (1, 128, 128, 1)
-    >>> np.abs(np.sum(Y - X) - 1502.14844) < 5e-4
+    >>> np.abs(np.sum(Y - X) - 1500.0) < 5.0
     True
     """
     def __init__(self,
@@ -1273,14 +1355,19 @@ class UNet(BaseModel):
                  num_filters=[64, 128, 256, 512, 1024],
                  filter_sizes=3,
                  activations="relu",
+                 use_downconvolution=False,
                  use_upconvolution=True,
+                 use_strided_convolution=False,
+                 use_strided_deconvolution=False,
+                 use_maxpooling=True,
                  use_maxunpooling=False,
                  use_maxunpooling_mask=False,
                  use_deconvolutions=False,
                  use_batch_normalization=False,
                  data_format=None,
                  device=None,
-                 name="U-Net"):
+                 name="UNet",
+                 _model=None):
 
         super(UNet, self).__init__("nethin.models.UNet",
                                    data_format=data_format,
@@ -1314,7 +1401,7 @@ class UNet(BaseModel):
         else:
             self.num_conv_layers = tuple(num_conv_layers)
 
-        self.num_filters = tuple(num_filters)
+        self.num_filters = tuple([int(nf) for nf in num_filters])
 
         if isinstance(filter_sizes, int):
             self.filter_sizes = (filter_sizes,) * len(self.num_conv_layers)
@@ -1322,8 +1409,9 @@ class UNet(BaseModel):
                 raise ValueError("``filter_sizes`` should have the same "
                                  "length as ``num_conv_layers``.")
         else:
-            self.filter_sizes = tuple(filter_sizes)
+            self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
+        self._activations_orig = activations
         if isinstance(activations, str):
             activations_enc = [self._with_device(Activation, activations)
                                for i in range(len(num_conv_layers))]
@@ -1332,6 +1420,7 @@ class UNet(BaseModel):
             activations_dec = [self._with_device(Activation, activations)
                                for i in range(len(num_conv_layers))]
             self.activations_dec = tuple(activations_dec)
+
         elif len(activations) != len(num_conv_layers):
             raise ValueError("``activations`` should have the same length as "
                              "``num_conv_layers``.")
@@ -1352,7 +1441,24 @@ class UNet(BaseModel):
             raise ValueError("``activations`` must be a str, or a tuple of "
                              "str or ``Activation``.")
 
+        if use_downconvolution == False \
+                and use_strided_convolution == False \
+                and use_maxpooling == False:
+            raise ValueError("One of ``use_downconvolution``, "
+                             "``use_strided_convolution``, "
+                             "``use_maxpooling`` must be ``True``.")
+        if use_upconvolution == False \
+                and use_strided_deconvolution == False \
+                and use_maxunpooling == False:
+            raise ValueError("One of ``use_upconvolution``, "
+                             "``use_strided_deconvolution``, "
+                             "``use_maxunpooling`` must be ``True``.")
+
+        self.use_downconvolution = bool(use_downconvolution)
         self.use_upconvolution = bool(use_upconvolution)
+        self.use_strided_convolution = bool(use_strided_convolution)
+        self.use_strided_deconvolution = bool(use_strided_deconvolution)
+        self.use_maxpooling = bool(use_maxpooling)
         self.use_maxunpooling = bool(use_maxunpooling)
         self.use_maxunpooling_mask = bool(use_maxunpooling_mask)
         self.use_deconvolutions = bool(use_deconvolutions)
@@ -1363,7 +1469,10 @@ class UNet(BaseModel):
         else:  # data_format == "channels_first":
             self._axis = 1
 
-        self.model = self._with_device(self._generate_model)
+        if _model is None:
+            self.model = self._with_device(self._generate_model)
+        else:
+            self.model = _model
 
     def save(self, filepath, overwrite=True, include_optimizer=True):
         """Save the model to a single HDF5 file.
@@ -1399,9 +1508,224 @@ class UNet(BaseModel):
         # here:
         #     https://github.com/fchollet/keras/issues/6021
         #     https://github.com/fchollet/keras/issues/5442
-        raise NotImplementedError("The save method currencly does not work in "
-                                  "Keras when there are skip connections. Use "
-                                  "``save_weights`` instead.")
+        # raise NotImplementedError("The save method currencly does not work in "
+        #                           "Keras when there are skip connections. Use "
+        #                           "``save_weights`` instead.")
+
+        self.model.save(filepath, overwrite=overwrite,
+                        include_optimizer=include_optimizer)
+
+        # Append own config.
+        with h5py.File(filepath, "r+") as f:
+            f.attrs[consts.NETHIN_SAVE_KEY] = json.dumps({
+                        "class_name": self.__class__.__name__,
+                        "config": self.get_config()},
+                    default=utils.get_json_type).encode("utf8")
+            f.flush()
+
+    @classmethod
+    def load(cls,
+             filepath,
+             custom_objects=None,
+             compile=True,
+             device=None):
+        """Loads a model saved via ``save``.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the saved model.
+
+        custom_objects : dict, optional
+            Optional dictionary mapping names (strings) to custom classes or
+            functions to be considered during deserialization.
+
+        compile : bool, optional
+            Whether to compile the model after loading. Default is True, the
+            model will be compiled.
+
+        device : str, optional
+            A particular device to run the model on. Default is ``None``, which
+            means to run on the device defined in ``filepath``. Use
+            ``nethin.utils.Helper.get_device()`` to see available devices.
+
+        Returns
+        -------
+            A model instance. If an optimizer was found as part of the saved
+            model, the model is already compiled. Otherwise, the model is
+            uncompiled and a warning will be displayed. When ``compile`` is set
+            to False, the compilation is omitted without any warning.
+
+        Raises
+        ------
+        ImportError
+            If h5py is not available.
+
+        ValueError
+            In case of an invalid savefile.
+        """
+        with h5py.File(filepath, mode="r") as f:
+            # Instantiate model
+            nethin_config = f.attrs.get(consts.NETHIN_SAVE_KEY)
+            if nethin_config is None:
+                raise ValueError("No Nethin model found in config file.")
+            nethin_config = json.loads(nethin_config.decode("utf-8"))
+
+            if "class_name" not in nethin_config:
+                raise ValueError("Invalid format of config file.")
+            class_name = nethin_config["class_name"]
+            if class_name != cls.__name__:
+                raise ValueError('File not saved by this class '
+                                 '("%s"" != ""%s").'
+                                 % (class_name, cls.__name__,))
+
+            if "config" not in nethin_config:
+                raise ValueError("Invalid format of config file.")
+            config = nethin_config["config"]
+
+            # Redefine the device in the model config if it was given.
+            if device is None:
+                if "device" in config:  # Always true
+                    device = config["device"]
+            else:
+                config["device"] = device
+
+        # TODO: Required when device is None?
+        model = with_device(device,
+                            load_model,
+                            filepath,
+                            custom_objects=custom_objects,
+                            compile=compile)
+        # model = load_model(filepath,
+        #                    custom_objects=custom_objects,
+        #                    compile=compile)
+
+        def _find_layer(layer_name):
+            for layer in model.layers:
+                if layer.name == layer_name:
+                    return layer
+            return None
+
+#        # Deserialise the mask if there are unpooling layers
+#        for layer in model.layers:
+#            if layer.name.startswith("maxunpool"):
+#                if isinstance(layer, layers.MaxUnpooling2D):
+#                    if isinstance(layer.mask, str):
+#                        parts = layer.mask.split("/")
+#                        if len(parts) >= 2:
+#                            sought_layer_name = parts[0]
+#                            sought_layer = _find_layer(sought_layer_name)
+#                            if sought_layer is not None:
+#                                layer.mask = sought_layer.mask
+
+        unet = UNet.from_config(config, _model=model)
+
+        return unet
+
+    def get_config(self):
+        """Returns the config of the model.
+
+        A model config is a Python dictionary (serializable) containing the
+        configuration of a model. The same model can be reinstantiated later
+        (without its trained weights) from this configuration.
+
+        The config of a model does not include connectivity information, nor
+        the model class name. These are handled by `Container` (one layer of
+        abstraction above).
+
+        Returns
+        -------
+        config : dict
+            A Python dictionary containing the model configuration.
+        """
+        config = super(UNet, self).get_config()
+
+        if "data_format" not in config:
+            config["data_format"] = self.data_format
+
+        if "device" not in config:
+            config["device"] = self.device
+
+        if "name" not in config:
+            config["name"] = self.name
+
+        config["input_shape"] = self.input_shape
+        config["output_channels"] = self.output_channels
+        config["num_conv_layers"] = self.num_conv_layers
+        config["num_filters"] = self.num_filters
+        config["filter_sizes"] = self.filter_sizes
+        config["activations"] = self._activations_orig
+        config["use_upconvolution"] = self.use_upconvolution
+        config["use_maxunpooling"] = self.use_maxunpooling
+        config["use_maxunpooling_mask"] = self.use_maxunpooling_mask
+        config["use_deconvolutions"] = self.use_deconvolutions
+        config["use_batch_normalization"] = self.use_batch_normalization
+
+        return config
+
+    @classmethod
+    def from_config(cls, config, _model=None):
+        """Creates a model from its config.
+
+        This method is the reverse of `get_config`, capable of instantiating
+        the same model from the config dictionary. It does not handle model
+        connectivity (handled by Container), nor weights (handled by
+        `set_weights`).
+
+        Parameters
+        ----------
+        config : dict
+            Typically the output of get_config.
+
+        Returns
+        -------
+            An instance of the model.
+
+        Raises
+        ------
+        KeyError
+            If "input_shape" is not in the ``config`` dictionary.
+        """
+        input_shape = config.pop("input_shape")
+
+        return cls(input_shape, **config, _model=_model)
+
+    def set_weights(self, weights):
+        """Sets the weights of the model.
+
+        Parameters
+        ----------
+        weights : list of numpy arrays
+            A list of Numpy arrays with shapes and types matching the output of
+            ``model.get_weights()``. If the shapes do not match, Keras will
+            throw an error. If the length is shorter than that of
+            ``model.get_weights()``, only the first ``len(weights)`` layer's
+            weights will be set; if the length is longer, a ``ValueError`` will
+            be raised.
+        """
+        if not isinstance(weights, list):
+            raise ValueError("``weights`` must be a list of numpy arrays.")
+
+        weight_values = []
+        num_layers = len(self.model.layers)
+        for layer_i in range(num_layers):
+            layer = self.model.layers[layer_i]
+            num_param = len(layer.weights)
+            layer_weights = weights[:num_param]
+
+            for tensor, weight in zip(layer.weights, layer_weights):
+                weight_values.append((tensor, weight))
+
+            weights = weights[num_param:]  # Update list
+
+            if len(weights) == 0:
+                break  # Silent stop. Allows only the first layers to be set
+
+        if len(weights) > 0:
+            raise ValueError("The number of provided parameters must match "
+                             "the output of ``model.get_weights()``.")
+
+        K.batch_set_value(weight_values)
 
     def _generate_model(self):
 
@@ -1432,30 +1756,47 @@ class UNet(BaseModel):
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format)(x)
+
                 if self.use_batch_normalization:
                     x = BatchNormalization(axis=self._axis)(x)
+
                 x = activation_function_i(x)
 
             skip_connections.append(x)
 
-            # TODO: Add alternatives here, e.g. strided convolution
-            if self.use_maxunpooling:
-                pool_name = "maxpool_%d" % (i,)
-                pool_name = pool_name + "_" + str(K.get_uid(pool_name))
-                maxpooling = layers.MaxPooling2D(pool_size=(2, 2),
-                                                 strides=(2, 2),
-                                                 padding="same",
-                                                 data_format=self.data_format,
-                                                 compute_mask=self.use_maxunpooling_mask,
-                                                 name=pool_name)
-                x = maxpooling(x)
+            if self.use_maxpooling:
+                if self.use_maxunpooling:
+                    pool_name = "maxpool_%d" % (i,)
+                    pool_name = pool_name + "_" + str(K.get_uid(pool_name))
+                    maxpooling = layers.MaxPooling2D(pool_size=(2, 2),
+                                                     strides=(2, 2),
+                                                     padding="same",
+                                                     data_format=self.data_format,
+                                                     compute_mask=self.use_maxunpooling_mask,
+                                                     name=pool_name)
+                    x = maxpooling(x)
+    
+                    maxpooling_layers.append(maxpooling)
+                else:
+                    x = MaxPooling2D(pool_size=(2, 2),
+                                     strides=(2, 2),
+                                     padding="same",
+                                     data_format=self.data_format)(x)
 
-                maxpooling_layers.append(maxpooling)
-            else:
-                x = MaxPooling2D(pool_size=(2, 2),
-                                 strides=(2, 2),
-                                 padding="same",
-                                 data_format=self.data_format)(x)
+            elif self.use_strided_convolution:
+                x = Convolution2D(num_filters_i,
+                                  (filter_sizes_i, filter_sizes_i),
+                                  strides=(2, 2),  # Downsampling
+                                  padding="same",
+                                  data_format=self.data_format)(x)
+
+            elif self.use_downconvolution:
+                x = layers.Resampling2D(
+                            [0.5, 0.5],
+                            method=layers.Resampling2D.ResizeMethod.BILINEAR,
+                            data_format=self.data_format)(x)
+            else:  # Should not be able to happen!
+                raise RuntimeError("No subsampling method selected.")
 
         # Last encoding part (contractive path)
         num_conv_layers_i = self.num_conv_layers[-1]
@@ -1469,8 +1810,10 @@ class UNet(BaseModel):
                               strides=(1, 1),
                               padding="same",
                               data_format=self.data_format)(x)
+
             if self.use_batch_normalization:
                 x = BatchNormalization(axis=self._axis)(x)
+
             x = activation_function_i(x)
 
         # First decoding part (expansive path)
@@ -1482,17 +1825,18 @@ class UNet(BaseModel):
         for j in range(num_conv_layers_i):
             if self.use_deconvolutions:
                 x = layers.Convolution2DTranspose(
-                        num_filters_i,
-                        (filter_sizes_i, filter_sizes_i),
-                        strides=(1, 1),
-                        padding="same",
-                        data_format=self.data_format)(x)
+                                            num_filters_i,
+                                            (filter_sizes_i, filter_sizes_i),
+                                            strides=(1, 1),
+                                            padding="same",
+                                            data_format=self.data_format)(x)
             else:
                 x = Convolution2D(num_filters_i,
                                   (filter_sizes_i, filter_sizes_i),
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format)(x)
+
             x = activation_function_i(x)
 
         # Build decoding part (expansive path)
@@ -1503,46 +1847,49 @@ class UNet(BaseModel):
             activation_function_i = self.activations_dec[i - 1]
 
             if self.use_upconvolution:
-                x = UpSampling2D(size=(2, 2), data_format=self.data_format)(x)
+                x = layers.Resampling2D((2, 2),
+                                        data_format=self.data_format)(x)
+                # x = UpSampling2D(size=(2, 2), data_format=self.data_format)(x)
+
                 x = Convolution2D(num_filters_i,
                                   (2, 2),  # Filter size of up-convolution
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format)(x)
-            else:
-                if not self.use_maxunpooling:
-                    # Strided deconvolution for upsampling
-                    x = layers.Convolution2DTranspose(
-                            num_filters_i,
-                            (filter_sizes_i, filter_sizes_i),
-                            strides=(2, 2),  # Upsampling
-                            padding="same",
-                            data_format=self.data_format)(x)
-                else:
-                    # Max unpooling
-                    if self.use_maxunpooling_mask:
-                        mask = maxpooling_layers[-(i - 1)].mask
+            elif self.use_strided_deconvolution:
+                # Strided deconvolution for upsampling
+                x = layers.Convolution2DTranspose(
+                                            num_filters_i,
+                                            (filter_sizes_i, filter_sizes_i),
+                                            strides=(2, 2),  # Upsampling
+                                            padding="same",
+                                            data_format=self.data_format)(x)
+            elif self.use_maxunpooling:
+                # Max unpooling
+                if self.use_maxunpooling_mask:
+                    mask = maxpooling_layers[-(i - 1)].mask
 
-                        # Adjust the number of channels, if necessary
-                        if self.num_filters[-i] != self.num_filters[-(i - 1)]:
-                            x = Convolution2D(self.num_filters[-i],
-                                              (1, 1),
-                                              strides=(1, 1),
-                                              padding="same",
-                                              data_format=self.data_format)(x)
-                    else:
-                        mask = None
-                    unpool_name = "maxunpool_%d" \
-                        % (len(self.num_conv_layers) - i,)
-                    unpool_name = unpool_name + \
-                        "_" + str(K.get_uid(unpool_name))
-                    x = layers.MaxUnpooling2D(pool_size=(2, 2),
-                                              strides=(2, 2),  # Not used
-                                              padding="same",  # Not used
-                                              data_format="channels_last",
-                                              mask=mask,
-                                              fill_zeros=True,
-                                              name=unpool_name)(x)
+                    # Adjust the number of channels, if necessary
+                    if self.num_filters[-i] != self.num_filters[-(i - 1)]:
+                        x = Convolution2D(self.num_filters[-i],
+                                          (1, 1),
+                                          strides=(1, 1),
+                                          padding="same",
+                                          data_format=self.data_format)(x)
+                else:
+                    mask = None
+
+                unpool_name = "maxunpool_%d" % (len(self.num_conv_layers) - i,)
+                unpool_name = unpool_name + "_" + str(K.get_uid(unpool_name))
+                x = layers.MaxUnpooling2D(pool_size=(2, 2),
+                                          strides=(2, 2),  # Not used
+                                          padding="same",  # Not used
+                                          data_format="channels_last",
+                                          mask=mask,
+                                          fill_zeros=True,
+                                          name=unpool_name)(x)
+            else:  # Should not be able to happen!
+                raise RuntimeError("No upsampling method selected.")
 
             skip_connection = skip_connections[-(i - 1)]
 
@@ -1551,17 +1898,18 @@ class UNet(BaseModel):
             for j in range(num_conv_layers_i):
                 if self.use_deconvolutions:
                     x = layers.Convolution2DTranspose(
-                            num_filters_i,
-                            (filter_sizes_i, filter_sizes_i),
-                            strides=(1, 1),
-                            padding="same",
-                            data_format=self.data_format)(x)
+                                            num_filters_i,
+                                            (filter_sizes_i, filter_sizes_i),
+                                            strides=(1, 1),
+                                            padding="same",
+                                            data_format=self.data_format)(x)
                 else:
                     x = Convolution2D(num_filters_i,
                                       (filter_sizes_i, filter_sizes_i),
                                       strides=(1, 1),
                                       padding="same",
                                       data_format=self.data_format)(x)
+
                 x = activation_function_i(x)
 
         # Final convolution to generate the requested output number of channels
@@ -1570,6 +1918,7 @@ class UNet(BaseModel):
                           strides=(1, 1),
                           padding="same",
                           data_format=self.data_format)(x)
+
         outputs = x
 
 #        # Ensure that the model takes into account
@@ -1608,6 +1957,13 @@ class GAN(BaseModel):
         for, for every training iteration of the adversarial model. Default is
         1.
 
+    instance_noise : float, optional
+        A factor by which instance noise is scaled. Instance (Gaussian) noise
+        is added to the inputs to the discriminator in order to improve
+        training of GANs (see [2]_). The noise is annealed as ``1/n``, for
+        ``n`` the number of iterations (updates of the generator). Default is
+        1.0, which means to add instance noise using a factor 1.0.
+
     data_format : str, optional
         One of ``channels_last`` (default) or ``channels_first``. The ordering
         of the dimensions in the inputs. ``channels_last`` corresponds to
@@ -1630,7 +1986,11 @@ class GAN(BaseModel):
     .. [1] I. J. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu,
        D. Warde-Farley, S. Ozair, A. C. Courville and Y. Bengio (2014).
        "Generative Adversarial Networks". arXiv:1406.2661 [stat.ML], available
-       at: https://arxiv.org/abs/1406.2661. NIPS, 2014.
+       at: https://arxiv.org/abs/1406.2661. NIPS 2014.
+
+    .. [2] M. Arjovsky and L. Bottou. "Towards Principled Methods for Training
+       Generative Adversarial Networks". arXiv:1701.04862 [stat.ML], available
+       at: https://arxiv.org/abs/1701.04862. ICLR 2017.
 
     Examples
     --------
@@ -1646,12 +2006,12 @@ class GAN(BaseModel):
     >>> from keras.layers.advanced_activations import LeakyReLU
     >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape  # Input, Flatten, Lambda
     >>> from keras.layers.normalization import BatchNormalization
-    >>> from keras.optimizers import Adam  # Optimizer
+    >>> from keras.optimizers import RMSprop, Adam
     >>> from keras.datasets import mnist
     >>>
     >>> (x_train, y_train), (x_test, y_test) = mnist.load_data()
-    >>> x_train = x_train[..., np.newaxis] / 255.0
-    >>> x_test = x_test[..., np.newaxis] / 255.0
+    >>> x_train = np.concatenate((x_train, x_test))[..., np.newaxis]
+    >>> x_train = (x_train - 127.5) / 127.5
     >>> dropout_rate = 0.4
     >>> alpha = 0.2
     >>> noise_shape = (100,)
@@ -1663,18 +2023,22 @@ class GAN(BaseModel):
     ...     D = Sequential()
     ...     D.add(Convolution2D(64, (5, 5), strides=2, input_shape=data_shape,
     ...                         padding="same"))
+    ...     D.add(BatchNormalization(momentum=0.9))
     ...     D.add(LeakyReLU(alpha))
     ...     D.add(Dropout(dropout_rate))
     ...     D.add(Convolution2D(128, (5, 5), strides=2, input_shape=data_shape,
     ...                         padding="same"))
+    ...     D.add(BatchNormalization(momentum=0.9))
     ...     D.add(LeakyReLU(alpha))
     ...     D.add(Dropout(dropout_rate))
     ...     D.add(Convolution2D(256, (5, 5), strides=2, input_shape=data_shape,
     ...                         padding="same"))
+    ...     D.add(BatchNormalization(momentum=0.9))
     ...     D.add(LeakyReLU(alpha))
     ...     D.add(Dropout(dropout_rate))
     ...     D.add(Convolution2D(256, (5, 5), strides=2, input_shape=data_shape,
     ...                         padding="same"))
+    ...     D.add(BatchNormalization(momentum=0.9))
     ...     D.add(LeakyReLU(alpha))
     ...     D.add(Dropout(dropout_rate))
     ...     D.add(Flatten())
@@ -1687,29 +2051,26 @@ class GAN(BaseModel):
     ...     G = Sequential()
     ...     G.add(Dense(7 * 7 * 256, input_shape=noise_shape))
     ...     G.add(BatchNormalization(momentum=0.9))
-    ...     G.add(Activation("relu"))
-    ...     G.add(Reshape((7, 7, 256)))
+    ...     G.add(LeakyReLU(alpha))
     ...     G.add(Dropout(dropout_rate))
+    ...     G.add(Reshape((7, 7, 256)))
     ...     G.add(UpSampling2D())
     ...     G.add(Convolution2DTranspose(128, (5, 5), padding="same"))
     ...     G.add(BatchNormalization(momentum=0.9))
-    ...     G.add(Activation("relu"))
+    ...     G.add(LeakyReLU(alpha))
     ...     G.add(UpSampling2D())
     ...     G.add(Convolution2DTranspose(64, (5, 5), padding="same"))
     ...     G.add(BatchNormalization(momentum=0.9))
-    ...     G.add(Activation("relu"))
+    ...     G.add(LeakyReLU(alpha))
     ...     G.add(Convolution2DTranspose(1, (5, 5), padding="same"))
-    ...     G.add(Activation("sigmoid"))
+    ...     G.add(Activation("tanh"))
     ...
     ...     return G
     >>>
-    >>> D = utils.with_device(device, discr)
-    >>> G = utils.with_device(device, gener)
-    >>>
-    >>> gan = models.GAN(noise_shape, data_shape, G, D,
+    >>> gan = models.GAN(noise_shape, data_shape, gener, discr,
     ...                  num_iter_discriminator=2,
     ...                  device=device)
-    >>> gan.compile(optimizer=Adam(lr=0.0001, decay=5e-6),
+    >>> gan.compile(optimizer=RMSprop(lr=0.0001),
     ...             loss="binary_crossentropy",
     ...             metrics=["accuracy"])
     >>> loss_a = []
@@ -1720,30 +2081,53 @@ class GAN(BaseModel):
     >>> loss_d.append(loss[0][1])
     >>> loss_a.append(loss[1][1])
     >>> # print("it: %d, loss d: %f, loss a: %f" % (it, loss[0][1], loss[1][1]))
-    >>> loss
-    ([0.6749478, 0.68000001], [0.77042371, 0.0])
-    >>> # import matplotlib.pyplot as plt
-    >>> # plt.figure()
-    >>> # plt.subplot(1, 2, 1)
-    >>> # plt.plot(loss_d)
-    >>> # plt.subplot(1, 2, 2)
-    >>> # plt.plot(loss_a)
-    >>> # plt.show()
-    >>> # noise = np.random.uniform(-1.0, 1.0, size=(1,) + noise_shape)
-    >>> # fake_im = G.predict_on_batch(noise)
-    >>> # plt.figure()
-    >>> # plt.subplot(1, 2, 1)
-    >>> # plt.imshow(im_real[0, :, :, 0])
-    >>> # plt.subplot(1, 2, 2)
-    >>> # plt.imshow(fake_im[0, :, :, 0])
-    >>> # plt.show()
+    >>> # Loss D (CE, acc)
+    >>> np.round(loss[0], 2)  # doctest: +NORMALIZE_WHITESPACE
+    array([3.42, 0.34])
+    >>> # Loss D real (CE, acc)
+    >>> np.round(loss[1], 2)  # doctest: +NORMALIZE_WHITESPACE
+    array([0.6 , 0.68], dtype=float32)
+    >>> # Loss D fake (CE, acc)
+    >>> np.round(loss[2], 2)  # doctest: +NORMALIZE_WHITESPACE
+    array([6.24, 0.  ], dtype=float32)
+    >>> # gan = models.GAN(noise_shape, data_shape, gener, discr,
+    >>> #                  num_iter_discriminator=1,
+    >>> #                  instance_noise=1.0,
+    >>> #                  device=device)
+    >>> # gan.compile(optimizer=[RMSprop(lr=0.0001),
+    >>> #                        Adam(lr=0.0001, beta_1=0.9)],
+    >>> #             loss="binary_crossentropy",
+    >>> #             metrics=["accuracy"])
+    >>> # acc = []
+    >>> # for it in range(10000):  # equals 5000 iterations
+    >>> #     im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> #     loss = gan.train_on_batch(im_real)
+    >>> #     acc.append(loss[0][1])
+    >>> #     print("it: %d, iterations: %d, acc: %s, all: %s"
+    >>> #           % (it, gan._iterations, str(loss[0][1]), str(loss)))
+    >>> # # import matplotlib.pyplot as plt
+    >>> # # plt.figure()
+    >>> # # plt.subplot(1, 2, 1)
+    >>> # # plt.plot(loss_d)
+    >>> # # plt.subplot(1, 2, 2)
+    >>> # # plt.plot(loss_a)
+    >>> # # plt.show()
+    >>> # # noise = np.random.uniform(-1.0, 1.0, size=(1,) + noise_shape)
+    >>> # # fake_im = G.predict_on_batch(noise)
+    >>> # # plt.figure()
+    >>> # # plt.subplot(1, 2, 1)
+    >>> # # plt.imshow(im_real[0, :, :, 0])
+    >>> # # plt.subplot(1, 2, 2)
+    >>> # # plt.imshow(fake_im[0, :, :, 0])
+    >>> # # plt.show()
     """
     def __init__(self,
-                 noise_shape,
-                 data_shape,
+                 input_shape,
+                 output_shape,
                  generator,
                  discriminator,
                  num_iter_discriminator=1,
+                 instance_noise=1.0,
                  data_format=None,
                  device=None,
                  name="GAN"):
@@ -1753,59 +2137,71 @@ class GAN(BaseModel):
                                   device=device,
                                   name=name)
 
-        if noise_shape is not None:
-            if not isinstance(noise_shape, (tuple, list)):
-                raise ValueError('"noise_shape" must be a tuple.')
-        self.noise_shape = tuple([int(d) for d in noise_shape])
+        if input_shape is not None:
+            if not isinstance(input_shape, (tuple, list)):
+                raise ValueError('"input_shape" must be a tuple.')
+        self.input_shape = tuple([int(d) for d in input_shape])
 
-        if data_shape is not None:
-            if not isinstance(data_shape, (tuple, list)):
+        if output_shape is not None:
+            if not isinstance(output_shape, (tuple, list)):
                 raise ValueError('"data_shape" must be a tuple.')
-        self.data_shape = tuple([int(d) for d in data_shape])
+        self.output_shape = tuple([int(d) for d in output_shape])
 
         self.generator = generator
         self.discriminator = discriminator
         self.num_iter_discriminator = max(1, int(num_iter_discriminator))
+        if instance_noise is None:
+            self.instance_noise = instance_noise
+        else:
+            self.instance_noise = max(0.0, float(instance_noise))
 
         if self.data_format == "channels_last":
             self._axis = 3
         else:  # data_format == "channels_first":
             self._axis = 1
 
-        self._old_d_trainable = None
-        self._model_a_factory = None
-
-        self.model = self._with_device(self._generate_model)
+        self._model = self._with_device(self._generate_model)
+        self._batch_updates = 0
+        self._iterations = 0
 
     def _generate_model(self):
 
-        def _generate_d():
-            model_d = Sequential()
-            model_d.add(self.discriminator)
+        self._D = self.discriminator()
+        self._G = self.generator()
 
-            return model_d
+        def _generate_D():
 
-        def _generate_a():
-            model_a = Sequential()
-            model_a.add(self.generator)
+            inputs = Input(shape=self.output_shape)
+            outputs = self._D(inputs)
+            model_D = Model(inputs, outputs)
 
-            # We will change this back after compile, in order to leave no
-            # side-effects. This is potentially dangerous, since the user may
-            # change this value between _generate_model was called and compile
-            # is called. Solution?
-            self._old_d_trainable = self.discriminator.trainable
-            self.discriminator.trainable = False
-            # for l in D.layers:
-            #     l.trainable = False
-            model_a.add(self.discriminator)
+            return model_D
 
-            return model_a
+        def _generate_G():
 
-        self._model_a_factory = _generate_a
+            inputs = Input(shape=self.input_shape)
+            outputs = self._G(inputs)
+            model_G = Model(inputs, outputs)
 
-        model_d = self._with_device(_generate_d)
+            return model_G
 
-        return [model_d, None]
+        def _generate_GAN(G, D):
+
+            inputs = Input(shape=self.input_shape)
+            x = G(inputs)
+            D.trainable = False
+            outputs = D(x)
+
+            model_GAN = Model(inputs, outputs)
+
+            return model_GAN
+
+        model_G = _generate_G()
+        model_D = _generate_D()
+
+        self._model_GAN_factory = _generate_GAN
+
+        return [model_G, model_D, None]
 
     def compile(self,
                 optimizer,
@@ -1904,23 +2300,20 @@ class GAN(BaseModel):
         else:
             metrics = [metrics, metrics]
 
-        model_d, model_a = self.model
+        model_G, model_D, model_GAN = self._model
 
-        model_d.compile(optimizer=optimizer[0],
+        model_D.compile(optimizer=optimizer[0],
                         loss=loss[0],
                         metrics=metrics[0])
 
-        if self.model[1] is None:
-            model_a = self._model_a_factory()
-            self.model[1] = model_a
+        if model_GAN is None:
+            model_GAN = self._model_GAN_factory(model_G, model_D)
 
-        model_a.compile(optimizer=optimizer[1],
-                        loss=loss[1],
-                        metrics=metrics[1])
+        model_GAN.compile(optimizer=optimizer[1],
+                          loss=loss[1],
+                          metrics=metrics[1])
 
-        # We set it to False, let's change it back unless it has changed.
-        if self.discriminator.trainable is False:
-            self.discriminator.trainable = self._old_d_trainable
+        self._model = [model_G, model_D, model_GAN]
 
     def train_on_batch(self,
                        x,
@@ -1976,32 +2369,572 @@ class GAN(BaseModel):
                         sample_weight=None,
                         class_weight=None):
 
+        model_G, model_D, model_GAN = self._model
+
+        assert(model_GAN is not None)
+
         batch_size = x.shape[0]
-
-        model_d, model_a = self.model
-
-        assert(model_a is not None)
+        if y is None:
+            y = np.zeros([batch_size, 1])
 
         # Train discriminator
-        for i in range(self.num_iter_discriminator):
-            # im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), ...]
-            im_real = x
-            noise = np.random.uniform(-1.0, 1.0,
-                                      size=(batch_size,) + self.noise_shape)
-            im_fake = self.generator.predict(noise)
-            X = np.concatenate((im_real, im_fake))
-            _y = np.zeros([2 * batch_size, 1])
-            _y[batch_size:, :] = 1
-            loss_d = model_d.train_on_batch(X, _y)
+        if self.instance_noise is not None:
+            noise = np.random.randn(*x.shape) \
+                * (float(self.instance_noise) / float(self._batch_updates + 1))
+            noise = noise.astype(x.dtype)
+            loss_D_real = model_D.train_on_batch(x + noise, y)
+        else:
+            loss_D_real = model_D.train_on_batch(x, y)
 
-        # Train adversarial model
-        if y is None:
-            y = np.zeros([batch_size, 1])  # The oposite of what we "want to do"
-        noise = np.random.uniform(-1.0, 1.0,
-                                  size=(batch_size,) + self.noise_shape)
-        loss_a = model_a.train_on_batch(noise, y)
+        z = np.random.normal(0.0, 1.0, size=(batch_size,) + self.input_shape)
+        x_fake = model_G.predict_on_batch(z)
+        y_fake = np.ones([batch_size, 1])
 
-        return loss_d, loss_a
+        if self.instance_noise is not None:
+            noise = np.random.randn(*x.shape) \
+                * (float(self.instance_noise) / float(self._batch_updates + 1))
+            noise = noise.astype(x.dtype)
+            loss_D_fake = model_D.train_on_batch(x_fake + noise, y_fake)
+        else:
+            loss_D_fake = model_D.train_on_batch(x_fake, y_fake)
+
+        loss_D = (0.5 * np.add(loss_D_real, loss_D_fake)).tolist()
+
+#        im = np.concatenate((x, im_fake))
+#        _y = np.zeros([2 * batch_size, 1])
+#        _y[batch_size:, :] = 1
+
+        # Train GAN model (the generator part)
+        loss_GAN = None
+        if (self._batch_updates + 1) % self.num_iter_discriminator == 0:
+
+            z = np.random.normal(0.0, 1.0,
+                                 size=(batch_size,) + self.input_shape)
+            loss_GAN = model_GAN.train_on_batch(z, y)
+
+            self._iterations += 1
+
+        self._batch_updates += 1
+
+        self.metrics_names = [model_D.metrics_names,
+                              "DiscriminatorReal",
+                              "DiscriminatorFake",
+                              model_GAN.metrics_names]
+
+        return loss_D, loss_D_real, loss_D_fake, loss_GAN
+
+
+class WassersteinGAN(BaseModel):
+    """A Wasserstein Generative Adversarial Network [1]_.
+
+    Parameters
+    ----------
+    input_shape : tuple of ints
+        The shape of the input to the generator network, excluding the batch
+        dimension.
+
+    output_shape : tuple of ints
+        The shape of the input to the discriminator network (i.e., the training
+        data), excluding the batch dimension.
+
+    generator : Callable
+        Should return an instance of the generator network as a BaseModel or
+        keras.models.Model.
+
+    discriminator : Callable
+        Should return an instance of the discriminator network as a BaseModel
+        or keras.models.Model. Warning! Avoid relying on the discriminator
+        until you have compiled the model (using ``compile``).
+
+    num_iter_discriminator : int, optional
+        Positive integer. The number of iterations to train the discriminator
+        for, for every training iteration of the adversarial model. Default is
+        5.
+
+    boost_critic : bool, optional
+        Whether or not to perform extra training of the critic at the beginning
+        and at each 500th iteration. Default is True, boost the critic.
+
+    boost_batches : int, optional
+        If ``boost_critic=True``, the number of batch updates to use for
+        boosting the critic during a boost session. Default is 100.
+
+    boost_init_iters : int, optional
+        If ``boost_critic=True``, the number of initial iterations for which
+        the critic will be boosted. Default is 25.
+
+    boost_every_nth : int, optional
+        If ``boost_critic=True``, the boost will be used every
+        ``boost_every_nth``th iteration. Default is 500.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually the first GPU). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is "WassersteinGAN".
+
+    References
+    ----------
+    .. [1] M. Arjovsky, S. Chintala, L. Bottou (2017). "Wasserstein GAN".
+       arXiv:1701.07875v2 [stat.ML], available at:
+       https://arxiv.org/abs/1701.07875.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.set_random_seed(42)
+    >>> import nethin
+    >>> import nethin.models as models
+    >>> import nethin.constraints as constraints
+    >>> import nethin.utils as utils
+    >>> from keras.models import Model
+    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D, Convolution2DTranspose
+    >>> from keras.layers import Input
+    >>> from keras.layers.advanced_activations import LeakyReLU
+    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape  # Input, Flatten, Lambda
+    >>> from keras.layers.normalization import BatchNormalization
+    >>> from keras.optimizers import RMSprop  # Optimizer
+    >>> from keras.datasets import mnist
+    >>>
+    >>> (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    >>> x_train = np.concatenate((x_train, x_test))[..., np.newaxis]
+    >>> x_train = (x_train.astype(np.float32) - 127.5) / 127.5
+    >>> y_train = np.concatenate((y_train, y_test))
+    >>> learning_rate = 0.00001
+    >>> dropout_rate = 0.4
+    >>> alpha = 0.2
+    >>> noise_shape = (100,)
+    >>> data_shape = (28, 28, 1)
+    >>> # batch_size = 256
+    >>> batch_size = 100
+    >>> device = "/device:CPU:0"
+    >>> # device = "/device:GPU:0"
+    >>> def discr():
+    ...     inputs = Input(shape=data_shape)
+    ...     x = Convolution2D(64, (5, 5), strides=2, input_shape=data_shape,
+    ...                       padding="same",
+    ...                       bias_constraint=constraints.BoxConstraint(0.01),
+    ...                       kernel_constraint=constraints.BoxConstraint(0.01)
+    ...                      )(inputs)
+    ...     x = LeakyReLU(alpha)(x)
+    ...     x = Dropout(dropout_rate)(x)
+    ...     x = Convolution2D(128, (5, 5), strides=2,
+    ...                       padding="same",
+    ...                       bias_constraint=constraints.BoxConstraint(0.01),
+    ...                       kernel_constraint=constraints.BoxConstraint(0.01)
+    ...                      )(x)
+    ...     x = LeakyReLU(alpha)(x)
+    ...     x = Dropout(dropout_rate)(x)
+    ...     x = Convolution2D(256, (5, 5), strides=2,
+    ...                       padding="same",
+    ...                       bias_constraint=constraints.BoxConstraint(0.01),
+    ...                       kernel_constraint=constraints.BoxConstraint(0.01)
+    ...                      )(x)
+    ...     x = LeakyReLU(alpha)(x)
+    ...     x = Dropout(dropout_rate)(x)
+    ...     x = Convolution2D(256, (5, 5), strides=2,
+    ...                       padding="same",
+    ...                       bias_constraint=constraints.BoxConstraint(0.01),
+    ...                       kernel_constraint=constraints.BoxConstraint(0.01)
+    ...                      )(x)
+    ...     x = LeakyReLU(alpha)(x)
+    ...     x = Dropout(dropout_rate)(x)
+    ...     x = Flatten()(x)
+    ...     outputs = Dense(1,
+    ...                     bias_constraint=constraints.BoxConstraint(0.01),
+    ...                     kernel_constraint=constraints.BoxConstraint(0.01)
+    ...                    )(x)
+    ...
+    ...     D = Model(inputs, outputs)
+    ...
+    ...     return D
+    >>>
+    >>> def gener():
+    ...     inputs = Input(shape=noise_shape)
+    ...     x = Dense(7 * 7 * 256, input_shape=noise_shape)(inputs)
+    ...     x = BatchNormalization(momentum=0.9)(x)
+    ...     x = Activation("relu")(x)
+    ...     x = Reshape((7, 7, 256))(x)
+    ...     x = Dropout(dropout_rate)(x)
+    ...     x = UpSampling2D()(x)
+    ...     x = Convolution2DTranspose(128, (5, 5), padding="same")(x)
+    ...     x = BatchNormalization(momentum=0.9)(x)
+    ...     x = Activation("relu")(x)
+    ...     x = UpSampling2D()(x)
+    ...     x = Convolution2DTranspose(64, (5, 5), padding="same")(x)
+    ...     x = BatchNormalization(momentum=0.9)(x)
+    ...     x = Activation("relu")(x)
+    ...     x = Convolution2DTranspose(1, (5, 5), padding="same")(x)
+    ...     outputs = Activation("tanh")(x)
+    ...
+    ...     G = Model(inputs, outputs)
+    ...
+    ...     return G
+    >>>
+    >>> wgan = models.WassersteinGAN(noise_shape, data_shape, gener, discr,
+    ...                              num_iter_discriminator=2,
+    ...                              device=device,
+    ...                              boost_critic=False)
+    >>> wgan.compile(optimizer=RMSprop(lr=learning_rate))
+    >>> loss_d = []
+    >>> # for it in range(5000):
+    >>> im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> loss = wgan.train_on_batch(im_real)
+    >>> loss_d.append(loss[0])
+    >>> # print("it: %d, loss d: %f, all: %s" % (it, loss[0], str(loss)))
+    >>> np.round(loss, 4)  # doctest: +NORMALIZE_WHITESPACE
+    array([-0.0008, 0.0007, 0.0002, -0.0002])
+    >>> loss = wgan.train_on_batch(im_real)
+    >>> loss_d.append(loss[0])
+    >>> np.round(loss, 4)  # doctest: +NORMALIZE_WHITESPACE
+    array([ 0.0003, -0.0005,  0.0001, -0.0003])
+    >>> # wgan = models.WassersteinGAN(noise_shape, data_shape, gener, discr,
+    >>> #                              num_iter_discriminator=10,
+    >>> #                              device=device,
+    >>> #                              boost_critic=True,
+    >>> #                              boost_batches=20,
+    >>> #                              boost_every_nth=100,
+    >>> #                              boost_init_iters=25)
+    >>> # wgan.compile(optimizer=RMSprop(lr=learning_rate))
+    >>> # loss_d = []
+    >>> # for it in range(10000):  # equals 2000 iterations
+    >>> #     im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> #     loss = wgan.train_on_batch(im_real)
+    >>> #     if loss[-1] is not None:
+    >>> #         loss_d.append(loss[0])
+    >>> #     print("it: %d, iterations: %d, loss d: %f, all: %s"
+    >>> #           % (it, wgan._iterations, loss[0], str(loss)))
+    >>> # # print("it: %d, loss d: %f, all: %s" % (it, loss[0], str(loss)))
+    >>> # # import matplotlib.pyplot as plt
+    >>> # # plt.figure()
+    >>> # # plt.subplot(1, 2, 1)
+    >>> # # plt.plot(loss_d)
+    >>> # # plt.subplot(1, 2, 2)
+    >>> # # plt.plot(loss_a)
+    >>> # # plt.show()
+    >>> # # noise = np.random.uniform(-1.0, 1.0, size=(1,) + noise_shape)
+    >>> # # fake_im = G.predict_on_batch(noise)
+    >>> # # plt.figure()
+    >>> # # plt.subplot(1, 2, 1)
+    >>> # # plt.imshow(im_real[0, :, :, 0])
+    >>> # # plt.subplot(1, 2, 2)
+    >>> # # plt.imshow(fake_im[0, :, :, 0])
+    >>> # # plt.show()
+    """
+    def __init__(self,
+                 input_shape,
+                 output_shape,
+                 generator,
+                 discriminator,
+                 num_iter_discriminator=1,
+                 boost_critic=True,
+                 boost_batches=100,
+                 boost_init_iters=25,
+                 boost_every_nth=500,
+                 data_format=None,
+                 device=None,
+                 name="WassersteinGAN"):
+
+        super(WassersteinGAN, self).__init__("nethin.models.WassersteinGAN",
+                                             data_format=data_format,
+                                             device=device,
+                                             name=name)
+
+        if input_shape is not None:
+            if not isinstance(input_shape, (tuple, list)):
+                raise ValueError('"input_shape" must be a tuple.')
+        self.input_shape = tuple([int(d) for d in input_shape])
+
+        if output_shape is not None:
+            if not isinstance(output_shape, (tuple, list)):
+                raise ValueError('"output_shape" must be a tuple.')
+        self.output_shape = tuple([int(d) for d in output_shape])
+
+        self.generator = generator
+        self.discriminator = discriminator
+        self.num_iter_discriminator = max(1, int(num_iter_discriminator))
+        self.boost_critic = bool(boost_critic)
+        self.boost_batches = max(1, int(boost_batches))
+        self.boost_init_iters = max(0, int(boost_init_iters))
+        self.boost_every_nth = max(1, int(boost_every_nth))
+
+        if self.data_format == "channels_last":
+            self._axis = 3
+        else:  # data_format == "channels_first":
+            self._axis = 1
+
+        self._model = self._with_device(self._generate_model)
+        self._batch_updates = 0
+        self._iterations = 0
+
+    def _generate_model(self):
+
+        self._D = self.discriminator()
+        self._G = self.generator()
+
+        def _generate_D():
+
+            inputs = Input(shape=self.output_shape)
+            outputs = self._D(inputs)
+            model_D = Model(inputs, outputs)
+
+            return model_D
+
+        def _generate_G():
+
+            inputs = Input(shape=self.input_shape)
+            outputs = self._G(inputs)
+            model_G = Model(inputs, outputs)
+
+            return model_G
+
+        def _generate_GAN(G, D):
+
+            inputs = Input(shape=self.input_shape)
+            x = G(inputs)
+            D.trainable = False
+            outputs = D(x)
+
+            model_GAN = Model(inputs, outputs)
+
+            return model_GAN
+
+        model_G = _generate_G()
+        model_D = _generate_D()
+
+        self._model_GAN_factory = _generate_GAN
+
+        return [model_G, model_D, None]
+
+    def compile(self,
+                optimizer,
+                loss=None,
+                metrics=None,
+                loss_weights=None,
+                sample_weight_mode=None,
+                weighted_metrics=None,
+                target_tensors=None):
+        """Configures the model for training.
+
+        Parameters
+        ----------
+        optimizer : str, keras.optimizers.Optimizer or list of str or
+                    keras.optimizers.Optimizer, length 2
+            String (name of optimizer) or optimizer object. See
+            `optimizers <https://keras.io/optimizers>`_. If a list, the first
+            optimiser is used for the discriminator and the second optimiser is
+            used for the adversarial model.
+
+        loss : str or list of str, length 2
+            String (name of objective function) or objective function. See
+            `losses <https://keras.io/losses>`_. If a list, the first loss is
+            used for the discriminator and the second loss is used for the
+            adversarial model.
+
+         metrics : list of str or list of list of str, length 2, optional
+             List of metrics to be evaluated by the model during training and
+             testing. Typically you will use ``metrics=["accuracy"]``. If a
+             list of lists of str, the first list of metrics are used for the
+             discriminator and the second list of metrics is used for the
+             adversarial model.
+
+        loss_weights : list or dict, optional
+            Currently ignored by this model.
+
+        sample_weight_mode : None, str, list or dict, optional
+            Currently ignored by this model.
+
+        weighted_metrics : list, optional
+            Currently ignored by this model.
+
+        target_tensors : Tensor, optional
+            Currently ignored by this model.
+
+        **kwargs
+            When using the Theano/CNTK backends, these arguments are passed
+            into ``K.function``. When using the TensorFlow backend, these
+            arguments are passed into ``tf.Session.run``.
+
+        Raises
+        ------
+        ValueError
+            In case of invalid arguments for ``optimizer``, ``loss``,
+            ``metrics`` or ``sample_weight_mode``.
+        """
+        if (weighted_metrics is None) and (target_tensors is None):
+            # Recent additions to compile may not be available.
+            self._with_device(self._compile,
+                              optimizer,
+                              loss,
+                              metrics=metrics,
+                              loss_weights=loss_weights,
+                              sample_weight_mode=sample_weight_mode)
+        else:
+            self._with_device(self._compile,
+                              optimizer,
+                              loss,
+                              metrics=metrics,
+                              loss_weights=loss_weights,
+                              sample_weight_mode=sample_weight_mode,
+                              weighted_metrics=weighted_metrics,
+                              target_tensors=target_tensors)
+
+    def _compile(self,
+                 optimizer,
+                 loss=None,
+                 metrics=None,
+                 loss_weights=None,
+                 sample_weight_mode=None,
+                 weighted_metrics=None,
+                 target_tensors=None):
+
+        optimizer = utils.normalize_object(optimizer, 2, "optimizers")
+        # loss = utils.normalize_str(loss, 2, "losses")
+        if metrics is not None:
+            if isinstance(metrics, list):
+                if isinstance(metrics[0], str):
+                    metrics = (metrics,) * 2
+                elif not isinstance(metrics, list):
+                    raise ValueError('The "metrics" argument must be a list '
+                                     'of str or a list of a list of str.')
+            else:
+                raise ValueError('The "metrics" argument must be a list of '
+                                 'str or a list of a list of str.')
+        else:
+            metrics = [metrics, metrics]
+
+        def wasserstein_distance(y_true, y_pred):
+            return K.mean(y_true * y_pred)
+
+        model_G, model_D, model_GAN = self._model
+
+        model_D.compile(optimizer=optimizer[0],
+                        loss=wasserstein_distance,
+                        metrics=metrics[0])
+
+        if model_GAN is None:
+            model_GAN = self._model_GAN_factory(model_G, model_D)
+
+        model_GAN.compile(optimizer=optimizer[1],
+                          loss=wasserstein_distance,
+                          metrics=metrics[1])
+
+        self._model = [model_G, model_D, model_GAN]
+
+    def train_on_batch(self,
+                       x,
+                       y=None,
+                       sample_weight=None,
+                       class_weight=None):
+        """Runs a single gradient update on a single batch of data.
+
+        Arguments
+        ---------
+        x : numpy.ndarray or list of numpy.ndarray or dict of numpy.ndarray
+            Numpy array of training data, or list of Numpy arrays if the model
+            has multiple inputs. If all inputs in the model are named, you can
+            also pass a dictionary mapping input names to Numpy arrays.
+
+        y : numpy.ndarray or list of numpy.ndarray or dict of numpy.ndarray,
+            optional
+            Numpy array of target data, or list of Numpy arrays if the model
+            has multiple outputs. If all outputs in the model are named, you
+            can also pass a dictionary mapping output names to Numpy arrays.
+
+        sample_weight : numpy.ndarray, optional
+            Optional array of the same length as ``x``, containing weights to
+            apply to the model's loss for each sample. In the case of temporal
+            data, you can pass a 2D array with shape (samples,
+            sequence_length), to apply a different weight to every timestep of
+            every sample. In this case you should make sure to specify
+            ``sample_weight_mode="temporal"`` in ``compile()``.
+
+        class_weight : dict, optional
+            Optional dictionary mapping class indices (integers) to a weight
+            (float) to apply to the model's loss for the samples from this
+            class during training. This can be useful to tell the model to
+            "pay more attention" to samples from an under-represented class.
+
+        Returns
+        -------
+        Scalar training loss (if the model has a single output and no metrics)
+        or list of scalars (if the model has multiple outputs and/or metrics).
+        The attribute ``model.metrics_names`` will give you the display labels
+        for the scalar outputs. Returns the discriminator loss followed by the
+        adversarial model's loss.
+        """
+        return self._with_device(self._train_on_batch,
+                                 x,
+                                 y,
+                                 sample_weight=sample_weight,
+                                 class_weight=class_weight)
+
+    def _train_on_batch(self,
+                        x,
+                        y=None,
+                        sample_weight=None,
+                        class_weight=None):
+
+        model_G, model_D, model_GAN = self._model
+
+        assert(model_GAN is not None)
+
+        if self.boost_critic \
+                and (self._iterations < self.boost_init_iters
+                     or self._iterations % self.boost_every_nth == 0):
+            d_iters = max(self.num_iter_discriminator, self.boost_batches)
+        else:
+            d_iters = self.num_iter_discriminator
+
+        # Train discriminator
+        batch_size = x.shape[0]
+        y_ = np.ones([batch_size, 1])
+
+        loss_D_real = model_D.train_on_batch(x, y_)
+
+        noise = np.random.normal(0.0, 1.0,
+                                 size=(batch_size,) + self.input_shape)
+        x_ = model_G.predict_on_batch(noise)
+        loss_D_fake = model_D.train_on_batch(x_, -y_)
+
+        if isinstance(loss_D_fake, (list, tuple)):
+            wasserstein_loss = -1 * loss_D_real[0] - loss_D_fake[0]
+        else:
+            wasserstein_loss = -1 * loss_D_real - loss_D_fake
+
+        # Train GAN model (the generator part)
+        loss_GAN = None
+        if (self._batch_updates == 0) \
+                or ((self._batch_updates + 1) % d_iters == 0):
+
+            noise = np.random.normal(0.0, 1.0,
+                                     size=(batch_size,) + self.input_shape)
+
+            loss_GAN = model_GAN.train_on_batch(noise, y_)
+
+            self._iterations += 1
+
+        self._batch_updates += 1
+
+        self.metrics_names = ["wasserstein",
+                              model_D.metrics_names,
+                              model_D.metrics_names,
+                              model_GAN.metrics_names]
+
+        return wasserstein_loss, loss_D_real, loss_D_fake, loss_GAN
 
 
 if __name__ == "__main__":

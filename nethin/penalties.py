@@ -16,6 +16,8 @@ from six import with_metaclass
 import keras.backend as K
 from keras.utils import conv_utils
 
+__all__ = ["BasePenalty", "TotalVariation2D"]
+
 
 class BasePenalty(with_metaclass(abc.ABCMeta, object)):
     """Base class for penalties.

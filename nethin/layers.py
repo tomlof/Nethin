@@ -8,6 +8,10 @@ Created on Thu Oct 12 14:35:08 2017
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
+from enum import Enum
+
+import tensorflow as tf
+
 import keras.backend as K
 from keras.utils import conv_utils
 from keras.engine import InputSpec
@@ -15,9 +19,8 @@ from keras.engine.topology import Layer
 import keras.layers.convolutional as convolutional
 from keras.layers.pooling import MaxPooling2D as keras_MaxPooling2D
 
-import tensorflow as tf
-
-__all__ = ["MaxPooling2D", "MaxUnpooling2D", "Convolution2DTranspose"]
+__all__ = ["MaxPooling2D", "MaxUnpooling2D",
+           "Convolution2DTranspose", "Resampling2D"]
 
 
 class MaxPooling2D(Layer):
@@ -159,7 +162,7 @@ class MaxPooling2D(Layer):
                                              strides,
                                              self.padding.upper(),
                                              Targmax=tf.int64)
-        mask = tf.stop_gradient(mask)
+        mask = tf.stop_gradient(mask, name="mask")
 
         if self.data_format == "channels_first":
             inputs = tf.transpose(inputs, (0, 3, 1, 2))
@@ -207,16 +210,6 @@ class MaxUnpooling2D(Layer):
         One of ``"valid"`` or ``"same"`` (case-insensitive). This parameter is
         currently not used, instead a default ``"same"`` padding will be used.
 
-    data_format : str, optional
-        One of ``"channels_last"`` (default) or ``"channels_first"``. The
-        ordering of the dimensions in the inputs. ``"channels_last"``
-        corresponds to inputs with shape ``(batch, height, width, channels)``
-        while ``"channels_first"`` corresponds to inputs with shape ``(batch,
-        channels, height, width)``. It defaults to the ``image_data_format``
-        value found in your Keras config file at
-        ``~/.keras/keras.json``. If you never set it, then it will be
-        ``"channels_last"``.
-
     mask : Tensor, optional
         The mask from a ``MaxPooling2D`` layer to use in the upsampling.
         Default is None, which means that no mask is provided, and will thus
@@ -228,6 +221,16 @@ class MaxUnpooling2D(Layer):
         region, or to put the same value in all cells of the upsampled unpooled
         region. Default is True, put the value in the upper left corner and
         fill with zeros.
+
+    data_format : str, optional
+        One of ``"channels_last"`` (default) or ``"channels_first"``. The
+        ordering of the dimensions in the inputs. ``"channels_last"``
+        corresponds to inputs with shape ``(batch, height, width, channels)``
+        while ``"channels_first"`` corresponds to inputs with shape ``(batch,
+        channels, height, width)``. It defaults to the ``image_data_format``
+        value found in your Keras config file at
+        ``~/.keras/keras.json``. If you never set it, then it will be
+        ``"channels_last"``.
 
     Examples
     --------
@@ -264,9 +267,9 @@ class MaxUnpooling2D(Layer):
                  pool_size=(2, 2),
                  strides=(2, 2),
                  padding="same",
-                 data_format="channels_last",
                  mask=None,
                  fill_zeros=True,
+                 data_format="channels_last",
                  **kwargs):
 
         super(MaxUnpooling2D, self).__init__(**kwargs)
@@ -274,9 +277,9 @@ class MaxUnpooling2D(Layer):
         self.pool_size = conv_utils.normalize_tuple(pool_size, 2, "pool_size")
         self.strides = (2, 2)
         self.padding = "same"
-        self.data_format = conv_utils.normalize_data_format(data_format)
         self.mask = mask
         self.fill_zeros = bool(fill_zeros)
+        self.data_format = conv_utils.normalize_data_format(data_format)
 
     def build(self, input_shape):
 
@@ -319,8 +322,9 @@ class MaxUnpooling2D(Layer):
         config = {"pool_size": self.pool_size,
                   "strides": self.strides,
                   "padding": self.padding,
+                  "fill_zeros": self.fill_zeros,
                   "data_format": self.data_format,
-                  "fill_zeros": self.fill_zeros}
+                  "mask": None if self.mask is None else self.mask.name}
 
         base_config = super(MaxUnpooling2D, self).get_config()
 
@@ -449,7 +453,7 @@ class MaxUnpooling2D(Layer):
         return outputs
 
     def call(self, x):
-        if self.mask is None:
+        if (self.mask is None) or isinstance(self.mask, str):
             return self._maxunpool(x)
         else:
             return self._maxunpool_mask(x)
@@ -513,3 +517,167 @@ class Convolution2DTranspose(convolutional.Convolution2DTranspose):
             outputs.set_shape(output_shape)
 
         return outputs
+
+
+class Resampling2D(convolutional.UpSampling2D):
+    """Resampling layer for 2D inputs.
+
+    Resizes the input images to ``size``.
+
+    Parameters
+    ----------
+    size : int, or tuple of 2 integers.
+        The size of the resampled image, in the format ``(rows, columns)``.
+
+    method : Resampling2D.ResizeMethod or str, optional
+        The resampling method to use. Default is
+        ``Resampling2D.ResizeMethod.BILINEAR``. The string name of the enum
+        may also be provided.
+
+    data_format: str
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape
+        ``(batch, channels, height, width)``. It defaults to the
+        ``image_data_format`` value found in your Keras config file at
+        ``~/.keras/keras.json``. If you never set it, then it will be
+        ``"channels_last"``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from keras.layers import Input
+    >>> from keras.models import Model
+    >>> import nethin.layers as layers
+    >>> np.random.seed(42)
+    >>>
+    >>> X = np.array([[1, 2],
+    ...               [2, 3]])
+    >>> X = np.reshape(X, (1, 2, 2, 1))
+    >>> resize = layers.Resampling2D((2, 2), data_format="channels_last")
+    >>> inputs = Input(shape=(2, 2, 1))
+    >>> outputs = resize(inputs)
+    >>> model = Model(inputs, outputs)
+    >>> Y = model.predict_on_batch(X)
+    >>> Y[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 1. ,  1.5,  2. ,  2. ],
+           [ 1.5,  2. ,  2.5,  2.5],
+           [ 2. ,  2.5,  3. ,  3. ],
+           [ 2. ,  2.5,  3. ,  3. ]], dtype=float32)
+    >>> resize = layers.Resampling2D((0.5, 0.5), data_format="channels_last")
+    >>> inputs = Input(shape=(4, 4, 1))
+    >>> outputs = resize(inputs)
+    >>> model = Model(inputs, outputs)
+    >>> X_ = model.predict_on_batch(Y)
+    >>> X_[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 1.,  2.],
+           [ 2.,  3.]], dtype=float32)
+    >>>
+    >>> X = np.array([[1, 2],
+    ...               [2, 3]])
+    >>> X = np.reshape(X, (1, 1, 2, 2))
+    >>> resize = layers.Resampling2D((2, 2), data_format="channels_first")
+    >>> inputs = Input(shape=(1, 2, 2))
+    >>> outputs = resize(inputs)
+    >>> model = Model(inputs, outputs)
+    >>> Y = model.predict_on_batch(X)
+    >>> Y[0, 0, :, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 1. ,  1.5,  2. ,  2. ],
+           [ 1.5,  2. ,  2.5,  2.5],
+           [ 2. ,  2.5,  3. ,  3. ],
+           [ 2. ,  2.5,  3. ,  3. ]], dtype=float32)
+    >>> resize = layers.Resampling2D((0.5, 0.5), data_format="channels_first")
+    >>> inputs = Input(shape=(1, 4, 4))
+    >>> outputs = resize(inputs)
+    >>> model = Model(inputs, outputs)
+    >>> X_ = model.predict_on_batch(Y)
+    >>> X_[0, 0, :, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 1.,  2.],
+           [ 2.,  3.]], dtype=float32)
+    """
+    class ResizeMethod(Enum):
+        BILINEAR = "BILINEAR"  # Bilinear interpolation
+        NEAREST_NEIGHBOR = "NEAREST_NEIGHBOR"  # Nearest neighbor interpolation
+        BICUBIC = "BICUBIC"  # Bicubic interpolation
+        AREA = "AREA"  # Area interpolation
+
+    def __init__(self,
+                 size,
+                 method=ResizeMethod.BILINEAR,
+                 data_format=None,
+                 **kwargs):
+
+        super(Resampling2D, self).__init__(size=size,
+                                           data_format=data_format,
+                                           **kwargs)
+
+        if isinstance(method, Resampling2D.ResizeMethod):
+            self.method = method
+        elif isinstance(method, str):
+            try:
+                self.method = Resampling2D.ResizeMethod[method]
+            except KeyError:
+                raise ValueError("``method`` must be of type "
+                                 "``Resampling2D.ResizeMethod`` or one of "
+                                 "their string representations.")
+        else:
+            raise ValueError("``method`` must be of type "
+                             "``Resampling2D.ResizeMethod`` or one of "
+                             "their string representations.")
+
+    def call(self, inputs):
+
+        if self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
+            return super(Resampling2D, self).call(inputs)
+
+        else:
+            if self.method == Resampling2D.ResizeMethod.BILINEAR:
+                method = tf.image.ResizeMethod.BILINEAR
+            elif self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
+                method = tf.image.ResizeMethod.NEAREST_NEIGHBOR
+            elif self.method == Resampling2D.ResizeMethod.BICUBIC:
+                method = tf.image.ResizeMethod.BICUBIC
+            elif self.method == Resampling2D.ResizeMethod.AREA:
+                method = tf.image.ResizeMethod.AREA
+            else:  # Should not be able to happen!
+                raise ValueError("``method`` must be of type "
+                                 "``Resampling2D.ResizeMethod`` or one of "
+                                 "their string representations.")
+
+            if self.data_format == "channels_first":
+                original_shape = K.int_shape(inputs)
+                new_shape = K.cast(K.shape(inputs)[2:], K.floatx())
+                new_shape *= K.constant(self.size, dtype=K.floatx())
+                new_shape = tf.to_int32(new_shape + 0.5)  # !TF
+                inputs = K.permute_dimensions(inputs, [0, 2, 3, 1])
+                inputs = tf.image.resize_images(inputs, new_shape,  # !TF
+                                                method=method)
+                inputs = K.permute_dimensions(inputs, [0, 3, 1, 2])
+                inputs.set_shape((None,
+                                  None,
+                                  int((original_shape[2] * self.size[0]) + 0.5) if original_shape[2] is not None else None,
+                                  int((original_shape[3] * self.size[1]) + 0.5) if original_shape[3] is not None else None))
+            elif self.data_format == "channels_last":
+                original_shape = K.int_shape(inputs)
+                new_shape = K.cast(K.shape(inputs)[1:3], K.floatx())
+                new_shape *= K.constant(self.size, dtype=K.floatx())
+                new_shape = tf.to_int32(new_shape + 0.5)  # !TF
+                inputs = tf.image.resize_images(inputs, new_shape,  # !TF
+                                                method=method)
+                inputs.set_shape((None,
+                                  int((original_shape[1] * self.size[0]) + 0.5) if original_shape[1] is not None else None,
+                                  int((original_shape[2] * self.size[1]) + 0.5) if original_shape[2] is not None else None,
+                                  None))
+            else:
+                raise ValueError("Invalid data_format:", self.data_format)
+
+        return inputs
+
+    def get_config(self):
+
+        config = {"method": self.method.name}
+
+        base_config = super(Resampling2D, self).get_config()
+
+        return dict(list(base_config.items()) + list(config.items()))

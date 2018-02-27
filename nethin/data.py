@@ -22,6 +22,7 @@ from scipy.misc import imread, imresize
 from keras.utils import conv_utils
 
 import nethin
+import nethin.utils as utils
 
 try:
     from collections import Generator
@@ -38,6 +39,7 @@ except (ImportError):
 __all__ = ["BaseGenerator",
            "ImageGenerator", "ArrayGenerator",
            "Dicom3DGenerator", "DicomGenerator",
+           "Numpy3DGenerator",
            "Dicom3DSaver"]
 
 
@@ -1434,6 +1436,286 @@ class DicomGenerator(BaseGenerator):
                     image = self._process_image(image)
 
                     return_images.append(image)
+
+        return return_images
+
+
+class Numpy3DGenerator(BaseGenerator):
+    """A generator over 3D images in a given directory, saved as npz files.
+
+    It will be assume that all npz files in the directory are to be read. The
+    returned data will have shape ``(batch_size, height, width, channels)`` or
+    ``(batch_size, channels, height, width)``, depending on the value of
+    ``data_format``.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the images.
+
+    image_key : str
+        The string name of the key in the loaded ``NpzFile`` that contains the
+        image.
+
+    file_names : list of str or None, optional
+        A list of npz filenames to read or None, which means to read all npz
+        files. Default is None, read all npz files in the given directory.
+
+    batch_size : int or None, optional
+        The number of images to return at each yield. If None, all images will
+        be returned. If there are not enough images to return in one batch, the
+        source directory is considered exhausted, and StopIteration will be
+        thrown. Default is 1, which means to return only one image at the time.
+
+    restart_generation : bool, optional
+        Whether or not to start over from the first file again after the
+        generator has finished. Default is False, do not start over again.
+
+    randomize_order : bool, optional
+        Whether or not to randomise the order of the images as they are read.
+        The order will be completely random if ``random_pool_size`` is the same
+        size as the number of npz files in the given directory.
+        Otherwise, only ``random_pool_size`` npz files will be loaded at any
+        given time and only randomized within the loaded set of files. Use
+        ``random_pool_size`` in order to control the amount of randomness in
+        the outputs. Default is False, do not randomise the order of the
+        images.
+
+    random_pool_size : int or None, optional
+        Since the data will be read one npz file at the time, the slices can
+        only be randomised on a per-file basis. A random pool can therefore be
+        used to achieve inter-file mixing, and from which slices are selected
+        one mini-batch at the time. The value of ``random_pool_size``
+        determines how many files will be read and kept in the pool at the
+        same time. When the number of slices in the pool falls below the
+        average per-image number of slices times ``random_pool_size - 1``, a
+        new image will be automatically loaded into the pool, and the pool will
+        be reshuffled, to improve the mixing. If the ``random_pool_size`` is
+        small, only a few image will be kept in the pool at any given time, and
+        mini-batches may not be independent. If possible, for a complete mixing
+        of all slices, the value of ``random_pool_size`` should be set to
+        the number of files in the given directory. Default is None, which
+        means to not use the random pool. In this case, when
+        ``randomize_order=True``, the slices will only be randomised within
+        each file. If ``randomize_order=False``, the pool will not be used at
+        all.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers (for the
+        flip). If int, float or array_like, a new random state is created with
+        the provided value as seed. If None, the default numpy random state
+        (np.random) is used. Default is None, use the default numpy random
+        state.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from nethin.data import DicomGenerator
+    """
+    def __init__(self,
+                 dir_path,
+                 image_key,
+                 file_names=None,
+                 batch_size=1,
+                 restart_generation=False,
+                 randomize_order=False,
+                 random_pool_size=None,
+                 data_format=None,
+                 random_state=None):
+
+        self.dir_path = str(dir_path)
+        self.image_key = str(image_key)
+
+        if file_names is None:
+            self.file_names = None
+        else:
+            self.file_names = [str(file_name) for file_name in file_names]
+
+        if batch_size is None:
+            self.batch_size = batch_size
+        else:
+            self.batch_size = max(1, int(batch_size))
+
+        self.restart_generation = bool(restart_generation)
+        self.randomize_order = bool(randomize_order)
+
+        if random_pool_size is None:
+            self.random_pool_size = None
+        else:
+            self.random_pool_size = max(1, int(random_pool_size))
+
+        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.random_state = utils.normalize_random_state(random_state,
+                                                         rand_functions=["rand",
+                                                                         "randint",
+                                                                         "choice"])
+
+        self._all_files = self._list_dir()  # ["image1.npz", "image2.npz"]
+        self._file_i = 0
+        self._average_num_slices = 1.0
+        self._num_updates = 0
+        self._slice_queue = []
+
+        # Attempt to fill the queue
+        for file_i in range(len(self._all_files)):
+            self._file_i = file_i
+
+            if self._slice_queue_update(self._all_files[file_i]):
+                if len(self._slice_queue) > 0:
+                    break  # There are valid files with slices
+        if len(self._slice_queue) == 0:
+            raise ValueError("The given directory does not contain any valid "
+                             "npz files.")
+
+        self._throw_stop_iteration = False
+
+    def _list_dir(self):
+        all_files = os.listdir(self.dir_path)
+        all_images = []
+        for file in all_files:
+            if file.endswith(".npz"):
+                if os.path.isfile(os.path.join(self.dir_path, file)):
+                    if self.file_names is None:
+                        all_images.append(file)
+                    elif file in self.file_names:
+                        all_images.append(file)
+
+        return all_images
+
+    def _read_file(self, file):
+
+        image = np.load(file)
+
+        return image[self.image_key]
+
+    def _slice_queue_update(self, file):
+
+        try:
+            full_file = os.path.join(self.dir_path, file)
+            image = self._read_file(full_file)
+        except (KeyError) as e:
+            raise ValueError('Key "%s" does not exist in image file "%s".'
+                             % (self.image_key, file))
+        except:
+            return False
+
+        num_slices = image.shape[0]
+        for i in range(num_slices):
+            self._slice_queue_push(image[i, ...])
+
+        self._average_num_slices \
+            = (self._average_num_slices * self._num_updates + num_slices) \
+            / float(self._num_updates + 1)
+
+        self._num_updates += 1
+
+        if self.randomize_order:
+            self._slice_queue_shuffle()
+
+        return True
+
+    def _slice_queue_push(self, value):
+
+        self._slice_queue.append(value)
+
+    def _slice_queue_pop(self):
+
+        return self._slice_queue.pop(0)
+
+    def _slice_queue_shuffle(self):
+
+        indices = self.random_state.choice(len(self._slice_queue),
+                                           size=len(self._slice_queue),
+                                           replace=False).tolist()
+
+        new_queue = [None] * len(self._slice_queue)
+        for i in range(len(self._slice_queue)):
+            new_queue[i] = self._slice_queue[indices[i]]
+        self._slice_queue = new_queue
+
+    def throw(self, typ, **kwargs):
+        """Raise an exception in the generator.
+        """
+        super(Numpy3DGenerator, self).throw(typ, **kwargs)
+
+    def send(self, value):
+        """Send a value into the generator.
+
+        Return next yielded value or raise StopIteration.
+        """
+        if self._throw_stop_iteration:
+            if self.restart_generation:
+                self._throw_stop_iteration = False  # Should not happen
+            else:
+                if (self.batch_size is None) \
+                        or (len(self._slice_queue) < self.batch_size):
+                    self.throw(StopIteration)
+                else:
+                    pass  # We are not ready to stop just yet
+
+        if self.random_pool_size is None:
+            pool_size = 1
+        else:
+            pool_size = self.random_pool_size
+
+        return_images = []
+        while (self.batch_size is None) \
+                or (len(return_images) < self.batch_size):
+
+            while not self._throw_stop_iteration:
+                # If we have enough slices, don't update
+                if len(self._slice_queue) \
+                        >= self._average_num_slices * pool_size:
+                    break
+
+                self._file_i += 1
+                if (self.batch_size is None) and self.restart_generation:
+
+                    if self._file_i >= len(self._all_files):
+                        self._file_i = 0  # Restart next time
+                        break  # Do not read any more files now
+
+                elif (self.batch_size is None) and (not self.restart_generation):
+
+                    if self._file_i >= len(self._all_files):
+                        # Don't restart next time
+                        self._throw_stop_iteration = True
+                        break  # Do not read any more files now
+
+                elif (self.batch_size is not None) and self.restart_generation:
+
+                    if self._file_i >= len(self._all_files):
+                        self._file_i = 0  # Restart from first file
+
+                else:  # (self.batch_size is not None) and (not self.restart_generation):
+
+                    if self._file_i >= len(self._all_files):
+                        # Don't restart next time
+                        self._throw_stop_iteration = True
+                        break  # Do not read any more files now
+
+                self._slice_queue_update(self._all_files[self._file_i])
+
+            try:
+                image = self._slice_queue_pop()
+                return_images.append(image)
+            except (IndexError) as e:  # Empty queue
+                if (self.batch_size is None):
+                    break  # Done, return images
+                elif (not self.restart_generation):
+                    # We did not end on a full batch
+                    if len(return_images) != self.batch_size:
+                        self._throw_stop_iteration = True
+                        self.throw(StopIteration)
 
         return return_images
 

@@ -470,6 +470,61 @@ def normalize_str(value, n, name):
     return value_tuple
 
 
+def normalize_random_state(random_state, rand_functions=[]):
+    """Tests a given random_state argument.
+
+    Parameters
+    ----------
+    random_state : int, float, array_like or numpy.random.RandomState
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
+    rand_functions : list of str, optional
+        If given, will consider the given object as a valid random number
+        generator if it exposes the methods given in ``rand_functions``. I.e.,
+        ``random_state=np.random`` and ``rand_functions=["rand", "randn"]`` is
+        valid, but ``np.random`` and ``rand_functions=["foo", "bar"]`` is not.
+        If not valid, will try to use the given object as a seed for a new
+        random number generator. Will crash if this does not work.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> import numpy as np
+    >>> utils.normalize_random_state(np.random, rand_functions=["rand"])  # doctest: +ELLIPSIS
+    <module 'numpy.random' from ...>
+    >>> utils.normalize_random_state(np.random, rand_functions=["foo"])  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+        ...
+    TypeError: Cannot cast array from dtype('O') to dtype('int64') according to the rule 'safe'
+    >>> utils.normalize_random_state(42)  # doctest: +ELLIPSIS
+    <mtrand.RandomState ...>
+    """
+    if random_state is None:
+        random_state = np.random.random.__self__
+    else:
+        if isinstance(random_state, (int, float, np.ndarray)):
+            random_state = np.random.RandomState(seed=random_state)
+        elif isinstance(random_state, np.random.RandomState):
+            random_state = random_state
+        elif len(rand_functions) > 0:
+            has_all = True
+            for rand_function in rand_functions:
+                if not hasattr(random_state, rand_function):
+                    has_all = False
+                    break
+            if has_all:
+                random_state = random_state
+            else:  # May crash here..
+                random_state = np.random.RandomState(seed=random_state)
+        else:  # May crash here..
+            random_state = np.random.RandomState(seed=random_state)
+
+    return random_state
+
+
 def simple_bezier(dist,
                   controls=[0.25, 0.5, 0.75],
                   steps=256,
@@ -600,8 +655,9 @@ def dynamic_histogram_warping(I1,
     I2 : numpy.ndarray, dim 2
         The second image to be matched to ``I1``.
 
-    bins : The number of histogram bins. Default is 256, in order to capture
-        all intensities in a standard ``uint8`` image.
+    bins : int, optional
+        The number of histogram bins. Default is 256, in order to capture all
+        intensities in a standard ``uint8`` image.
 
     max_compression1 : int, optional
         The maximum allowed compression of the histogram of image 1 (I1).
@@ -697,19 +753,44 @@ def dynamic_histogram_warping(I1,
         elif D[m, n - 1] < D[m - 1, n - 1] and D[m, n - 1] < D[m - 1, n]:
             min_m = m
             min_n = n - 1
-        else:  # All costs are equal: Prefer to be close to the diagonal in
-               # this case.
-            if (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
-                min_m = m - 1
-                min_n = n
-            elif (float(n) / float(num_bins_B)) > (float(m) / float(num_bins_A)):
-                min_m = m
-                min_n = n - 1
-            else:
-                min_m = m - 1
-                min_n = n - 1
+        else:  # At least two costs were equally low: Prefer to be closer to
+               # the diagonal in this case (i.e., choose the one closest to the
+               # diagonal).
+            if D[m - 1, n - 1] == D[m - 1, n] \
+                    and D[m - 1, n - 1] == D[m, n - 1]:  # All equal:
+                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+                    min_m = m
+                    min_n = n - 1
+                elif (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                    min_m = m - 1
+                    min_n = n
+                else:
+                    min_m = m - 1
+                    min_n = n - 1
+            elif D[m - 1, n - 1] == D[m - 1, n]: # The two above are equal:
+                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+                    min_m = m - 1
+                    min_n = n - 1
+                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                    min_m = m - 1
+                    min_n = n
+            elif D[m - 1, n - 1] == D[m, n - 1]: # The two to the left are equal:
+                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+                    min_m = m
+                    min_n = n - 1
+                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                    min_m = m - 1
+                    min_n = n - 1
+            else:  # D[m - 1, n] == D[m, n - 1]: # The one to the left and the one above are equal:
+                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+                    min_m = m
+                    min_n = n - 1
+                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                    min_m = m - 1
+                    min_n = n
         m = min_m
         n = min_n
+        # print("%d %d: %f" % (m, n, D[m, n]))
         total_cost += D[m, n]
     x_A.insert(0, bins_A[0])
     x_B.insert(0, bins_B[0])
@@ -780,6 +861,108 @@ def dynamic_histogram_warping(I1,
             return total_cost
         else:
             return None
+
+
+def histogram_matching(A, B, return_cost=False, num_cost_interp=100):
+    """Performs histogram matchning (specification) from one image to another.
+
+    Adapted from:
+        https://stackoverflow.com/questions/32655686/histogram-matching-of-two-images-in-python-2-x
+
+    Parameters
+    ----------
+    A : numpy.ndarray
+        The first (template) image.
+
+    B : numpy.ndarray
+        The second image to be matched to ``A``.
+
+    return_cost : bool, optional
+        Quantify the cost of transforming the histogram of ``B`` to match that
+        of ``A``. The cost is computed as the integral of the difference of the
+        inverse cumulative distribution functions, i.e., the "sum" of vertical
+        distances between the histograms. Default is False. If True, will
+        return the cost as well.
+
+    num_cost_interp : int, optional
+        The cost function is computed numerically as a Riemann sum. The
+        ``num_cost_interp`` determines the number of discrete steps in the
+        Riemann approximation. Default is 100.
+
+    Returns
+    -------
+    matched_B, cost : If ``return_cost=True``.
+
+    matched_B : If ``return_cost=False``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from scipy.misc import face, ascent, imresize
+    >>> face = np.mean(face(), axis=2)
+    >>> ascent = ascent()
+    >>> try:
+    ...     from skimage.transform import resize
+    ...     face = resize(face, [512, 512], mode="reflect")
+    ...     ascent = resize(ascent, [512, 512], mode="reflect")
+    ... except:
+    ...     shape = face.shape
+    ...     idx = np.floor(shape[0] * np.linspace(0.0, 1.0 - np.finfo('float').eps, 512)).astype(np.int32)
+    ...     face = face[idx, :]
+    ...     idx = np.floor(shape[1] * np.linspace(0.0, 1.0 - np.finfo('float').eps, 512)).astype(np.int32)
+    ...     face = face[:, idx]
+    >>> import nethin.utils as utils
+    >>> A = face.astype(np.float64)
+    >>> B = ascent.astype(np.float64)
+    >>> hA = np.histogram(A.ravel(), bins=10)[0]
+    >>> hB = np.histogram(B.ravel(), bins=10)[0]
+    >>> np.sum(np.abs(hA - hB)) < 131000
+    True
+    >>> B_ = np.round(utils.histogram_matching(A, B))
+    >>> hB_ = np.histogram(B_.ravel(), bins=10)[0]
+    >>> np.sum(np.abs(hB - hB_)) < 136000
+    True
+    >>> np.sum(np.abs(hA - hB_)) < 7200
+    True
+
+    References
+    ----------
+    .. [1] R. C. Gonzalez and R. E. Woods (2008). "Digital Image Processing",
+       third edition. Pearson Education, Pearson Prentice Hall, Upper Saddle
+       River, New Jersey, USA.
+    """
+    B_shape = B.shape
+    A = A.ravel()
+    B = B.ravel()
+
+    B_values, bin_idx, B_counts = np.unique(B,
+                                            return_inverse=True,
+                                            return_counts=True)
+    A_values, A_counts = np.unique(A, return_counts=True)
+
+    B_quantiles = np.cumsum(B_counts).astype(np.float64)
+    B_quantiles /= B_quantiles[-1]
+    A_quantiles = np.cumsum(A_counts).astype(np.float64)
+    A_quantiles /= A_quantiles[-1]
+
+    interp_A_values = np.interp(B_quantiles, A_quantiles, A_values)
+    matched_B = interp_A_values[bin_idx].reshape(B_shape)
+
+    if return_cost:
+        B_norm = B_values / np.max(B_values)
+        A_norm = A_values / np.max(A_values)
+
+        ind_B = np.floor(B_norm.size * np.linspace(0.0, 1.0 - np.finfo(np.float64).eps, num_cost_interp)).astype(np.int32)
+        interp_B = B_norm[ind_B]
+        ind_A = np.floor(A_norm.size * np.linspace(0.0, 1.0 - np.finfo(np.float64).eps, num_cost_interp)).astype(np.int32)
+        interp_A = A_norm[ind_A]
+
+        dx = 1.0 / float(num_cost_interp - 1)
+        cost = np.sum(np.abs(interp_B - interp_A)) * dx
+
+        return matched_B, cost
+    else:
+        return matched_B
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 """
 import abc
 import json
-from six import with_metaclass
+from six import with_metaclass, string_types
+import warnings
 
 import h5py
 import numpy as np
@@ -32,8 +33,11 @@ from keras.layers.convolutional import Convolution2DTranspose
 from keras.layers.convolutional import ZeroPadding2D
 from keras.layers import Input, Activation, Dropout, Dense, Flatten, Lambda
 from keras.layers import Concatenate, Add
-import keras.optimizers as optimizers
 from keras.optimizers import Optimizer, Adam, RMSprop
+import keras.optimizers as optimizers
+import keras.activations
+import keras.initializers
+import keras.losses as losses
 
 from nethin.utils import with_device, Helper, to_snake_case
 import nethin.consts as consts
@@ -1259,7 +1263,7 @@ class UNet(BaseModel):
 
     use_maxpooling : bool, optional
         If True, uses 2x2 maxpooling for downsampling. Default is True, which
-        means to use unpooling for downsampling.
+        means to use maxpooling for downsampling.
 
     use_maxunpooling : bool, optional
         If True, uses 2x2 maxunpooling for upsampling. Default is False, which
@@ -1281,6 +1285,9 @@ class UNet(BaseModel):
     use_batch_normalization : bool, optional
         Whether or not to use batch normalization after each convolution in the
         encoding part. Default is False, do not use batch normalization.
+
+    kernel_initializer : str, keras.Initializer or Callable, optional
+        The initializer to use for all layers. Default is ``"glorot_uniform"``.
 
     data_format : str, optional
         One of ``channels_last`` (default) or ``channels_first``. The ordering
@@ -1364,6 +1371,7 @@ class UNet(BaseModel):
                  use_maxunpooling_mask=False,
                  use_deconvolutions=False,
                  use_batch_normalization=False,
+                 kernel_initializer="glorot_uniform",
                  data_format=None,
                  device=None,
                  name="UNet",
@@ -1412,19 +1420,21 @@ class UNet(BaseModel):
             self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
         self._activations_orig = activations
-        if isinstance(activations, str):
-            activations_enc = [self._with_device(Activation, activations)
+        if isinstance(activations, string_types):
+            activations_enc = [self._with_device(Activation,
+                                                 activations)
                                for i in range(len(num_conv_layers))]
             self.activations_enc = tuple(activations_enc)
 
-            activations_dec = [self._with_device(Activation, activations)
+            activations_dec = [self._with_device(Activation,
+                                                 activations)
                                for i in range(len(num_conv_layers))]
             self.activations_dec = tuple(activations_dec)
 
-        elif len(activations) != len(num_conv_layers):
-            raise ValueError("``activations`` should have the same length as "
-                             "``num_conv_layers``.")
         elif isinstance(activations, (list, tuple)):
+            if len(activations) != len(num_conv_layers):
+                raise ValueError("``activations`` should have the same length "
+                                 "as ``num_conv_layers``.")
 
             activations_enc = [None] * len(activations)
             for i in range(len(activations)):
@@ -1437,6 +1447,7 @@ class UNet(BaseModel):
                 activations_dec[i] = self._with_device(Activation,
                                                        activations[i])
             self.activations_dec = tuple(activations_dec)
+
         else:
             raise ValueError("``activations`` must be a str, or a tuple of "
                              "str or ``Activation``.")
@@ -1463,6 +1474,7 @@ class UNet(BaseModel):
         self.use_maxunpooling_mask = bool(use_maxunpooling_mask)
         self.use_deconvolutions = bool(use_deconvolutions)
         self.use_batch_normalization = bool(use_batch_normalization)
+        self.kernel_initializer = keras.initializers.get(kernel_initializer)
 
         if self.data_format == "channels_last":
             self._axis = 3
@@ -1714,7 +1726,8 @@ class UNet(BaseModel):
             layer_weights = weights[:num_param]
 
             for tensor, weight in zip(layer.weights, layer_weights):
-                weight_values.append((tensor, weight))
+                if layer_weights is not None:
+                    weight_values.append((tensor, weight))
 
             weights = weights[num_param:]  # Update list
 
@@ -1722,8 +1735,8 @@ class UNet(BaseModel):
                 break  # Silent stop. Allows only the first layers to be set
 
         if len(weights) > 0:
-            raise ValueError("The number of provided parameters must match "
-                             "the output of ``model.get_weights()``.")
+            warnings.warn("The number of provided parameters does not match "
+                          "the output of ``model.get_weights()``.")
 
         K.batch_set_value(weight_values)
 
@@ -1749,13 +1762,15 @@ class UNet(BaseModel):
             num_filters_i = self.num_filters[i]
             filter_sizes_i = self.filter_sizes[i]
             activation_function_i = self.activations_enc[i]
+            kernel_initializer_i = self.kernel_initializer
 
             for j in range(num_conv_layers_i):
                 x = Convolution2D(num_filters_i,
                                   (filter_sizes_i, filter_sizes_i),
                                   strides=(1, 1),
                                   padding="same",
-                                  data_format=self.data_format)(x)
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i)(x)
 
                 if self.use_batch_normalization:
                     x = BatchNormalization(axis=self._axis)(x)
@@ -1788,7 +1803,8 @@ class UNet(BaseModel):
                                   (filter_sizes_i, filter_sizes_i),
                                   strides=(2, 2),  # Downsampling
                                   padding="same",
-                                  data_format=self.data_format)(x)
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i)(x)
 
             elif self.use_downconvolution:
                 x = layers.Resampling2D(
@@ -1803,13 +1819,15 @@ class UNet(BaseModel):
         num_filters_i = self.num_filters[-1]
         filter_sizes_i = self.filter_sizes[-1]
         activation_function_i = self.activations_enc[-1]
+        kernel_initializer_i = self.kernel_initializer
 
         for j in range(num_conv_layers_i):
             x = Convolution2D(num_filters_i,
                               (filter_sizes_i, filter_sizes_i),
                               strides=(1, 1),
                               padding="same",
-                              data_format=self.data_format)(x)
+                              data_format=self.data_format,
+                              kernel_initializer=kernel_initializer_i)(x)
 
             if self.use_batch_normalization:
                 x = BatchNormalization(axis=self._axis)(x)
@@ -1821,6 +1839,7 @@ class UNet(BaseModel):
         num_filters_i = self.num_filters[-1]
         filter_sizes_i = self.filter_sizes[-1]
         activation_function_i = self.activations_dec[0]
+        kernel_initializer_i = self.kernel_initializer
 
         for j in range(num_conv_layers_i):
             if self.use_deconvolutions:
@@ -1829,13 +1848,15 @@ class UNet(BaseModel):
                                             (filter_sizes_i, filter_sizes_i),
                                             strides=(1, 1),
                                             padding="same",
-                                            data_format=self.data_format)(x)
+                                            data_format=self.data_format,
+                                            kernel_initializer=kernel_initializer_i)(x)
             else:
                 x = Convolution2D(num_filters_i,
                                   (filter_sizes_i, filter_sizes_i),
                                   strides=(1, 1),
                                   padding="same",
-                                  data_format=self.data_format)(x)
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i)(x)
 
             x = activation_function_i(x)
 
@@ -1845,6 +1866,7 @@ class UNet(BaseModel):
             num_filters_i = self.num_filters[-i]
             filter_sizes_i = self.filter_sizes[-i]
             activation_function_i = self.activations_dec[i - 1]
+            kernel_initializer_i = self.kernel_initializer
 
             if self.use_upconvolution:
                 x = layers.Resampling2D((2, 2),
@@ -1855,7 +1877,8 @@ class UNet(BaseModel):
                                   (2, 2),  # Filter size of up-convolution
                                   strides=(1, 1),
                                   padding="same",
-                                  data_format=self.data_format)(x)
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i)(x)
             elif self.use_strided_deconvolution:
                 # Strided deconvolution for upsampling
                 x = layers.Convolution2DTranspose(
@@ -1863,7 +1886,8 @@ class UNet(BaseModel):
                                             (filter_sizes_i, filter_sizes_i),
                                             strides=(2, 2),  # Upsampling
                                             padding="same",
-                                            data_format=self.data_format)(x)
+                                            data_format=self.data_format,
+                                            kernel_initializer=kernel_initializer_i)(x)
             elif self.use_maxunpooling:
                 # Max unpooling
                 if self.use_maxunpooling_mask:
@@ -1875,7 +1899,8 @@ class UNet(BaseModel):
                                           (1, 1),
                                           strides=(1, 1),
                                           padding="same",
-                                          data_format=self.data_format)(x)
+                                          data_format=self.data_format,
+                                          kernel_initializer=kernel_initializer_i)(x)
                 else:
                     mask = None
 
@@ -1902,13 +1927,15 @@ class UNet(BaseModel):
                                             (filter_sizes_i, filter_sizes_i),
                                             strides=(1, 1),
                                             padding="same",
-                                            data_format=self.data_format)(x)
+                                            data_format=self.data_format,
+                                            kernel_initializer=kernel_initializer_i)(x)
                 else:
                     x = Convolution2D(num_filters_i,
                                       (filter_sizes_i, filter_sizes_i),
                                       strides=(1, 1),
                                       padding="same",
-                                      data_format=self.data_format)(x)
+                                      data_format=self.data_format,
+                                      kernel_initializer=kernel_initializer_i)(x)
 
                 x = activation_function_i(x)
 
@@ -1917,7 +1944,8 @@ class UNet(BaseModel):
                           (1, 1),  # Filter size
                           strides=(1, 1),
                           padding="same",
-                          data_format=self.data_format)(x)
+                          data_format=self.data_format,
+                          kernel_initializer=kernel_initializer_i)(x)
 
         outputs = x
 

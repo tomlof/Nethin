@@ -21,6 +21,7 @@ __all__ = ["BaseAugmentation",
            "ImageResize", "ImageCrop", "ImageFlip",
            "ImageHistogramShift", "ImageHistogramScale",
            "ImageHistogramAffineTransform", "ImageHistogramTransform",
+           "ImageTransform",
            "Pipeline"]
 
 
@@ -725,12 +726,12 @@ class ImageHistogramAffineTransform(BaseAugmentation):
 
     Parameters
     ----------
-    shift : float or Callable, optional
-        Either the amount to shift, or a image-wise shift function (a function
-        that takes a whole image as input).
-
     scale : float or Callable, optional
         Either the scale factor, or a image-wise scale function (a function
+        that takes a whole image as input).
+
+    shift : float or Callable, optional
+        Either the amount to shift, or a image-wise shift function (a function
         that takes a whole image as input).
 
     min_value : float, optional
@@ -775,8 +776,8 @@ class ImageHistogramAffineTransform(BaseAugmentation):
            [-0.25      ,  0.25      ,  0.10111501]])
     """
     def __init__(self,
-                 shift=0.0,
                  scale=1.0,
+                 shift=0.0,
                  min_value=None,
                  max_value=None,
                  data_format=None,
@@ -929,12 +930,75 @@ class ImageHistogramTransform(BaseAugmentation):
 
     def __call__(self, inputs):
 
-        outputs = inputs
-
         if isinstance(self.transform, Transform):
             self.transform.prepare()
 
         outputs = self._vec_trans(inputs)
+
+        if (self.min_value is not None) or (self.max_value is not None):
+            outputs = np.clip(outputs, self.min_value, self.max_value)
+
+        return outputs
+
+
+class ImageTransform(BaseAugmentation):
+    """Transforms an entire input image.
+
+    Parameters
+    ----------
+    transform : Transform or Callable
+        Any function defined on the domain of the input image mapping to
+        another image.
+
+    min_value : float, optional
+        The minimum possible or allowed value of the image. If None, no lower
+        clipping will be performed. Default is None.
+
+    max_value : float, optional
+        The maximum possible or allowed value of the image. If None, no upper
+        clipping will be performed. Default is None.
+
+    Examples
+    --------
+    >>> from nethin.augmentation import ImageTransform
+    >>> from nethin.utils import simple_bezier
+    >>> import numpy as np
+    >>>
+    >>> np.random.seed(42)
+    """
+    def __init__(self,
+                 transform,
+                 min_value=None,
+                 max_value=None,
+                 data_format=None,
+                 random_state=None):
+
+        super(ImageTransform, self).__init__(data_format=data_format,
+                                             random_state=random_state)
+
+        if not callable(transform):
+            raise ValueError('``transform`` must be callable.')
+        self.transform = transform
+
+        if min_value is None:
+            self.min_value = min_value
+        else:
+            self.min_value = float(min_value)
+
+        if max_value is None:
+            self.max_value = max_value
+        else:
+            self.max_value = float(max_value)
+
+        if (self.min_value is not None) and (self.max_value is not None):
+            assert(self.min_value < self.max_value)
+
+    def __call__(self, inputs):
+
+        if isinstance(self.transform, Transform):
+            self.transform.prepare()
+
+        outputs = self.transform(inputs)
 
         if (self.min_value is not None) or (self.max_value is not None):
             outputs = np.clip(outputs, self.min_value, self.max_value)

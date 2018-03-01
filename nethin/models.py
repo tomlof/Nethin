@@ -1726,7 +1726,7 @@ class UNet(BaseModel):
             layer_weights = weights[:num_param]
 
             for tensor, weight in zip(layer.weights, layer_weights):
-                if layer_weights is not None:
+                if weights is not None:
                     weight_values.append((tensor, weight))
 
             weights = weights[num_param:]  # Update list

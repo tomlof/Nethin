@@ -24,10 +24,18 @@ import keras.backend as K
 
 import nethin.utils as utils
 
-__all__ = ["BasicTrainer", "CVTrainer"]
+__all__ = ["BaseTraner", "BasicTrainer", "CVTrainer"]
 
 
-class BasicTrainer(object):
+class BaseTraner(with_metaclass(abc.ABCMeta, object)):
+
+    @abc.abstractmethod
+    def train(self):
+        raise NotImplementedError('Abstract method "train" has not been '
+                                  'specialised.')
+
+
+class BasicTrainer(BaseTraner):
     """Basic trainer class used also as base class for other trainers.
 
     Assumes that generated images has the channels last data format
@@ -107,8 +115,15 @@ class BasicTrainer(object):
                     loss_batch_train.append(loss)
 
                     if self.verbose:
-                        print("train it: %d, batch: %d, loss: %s"
-                              % (it, batch_it_train, str(loss)))
+                        if self.max_iter_train is None:
+                            print("train it: %d/%d, batch: %d, loss: %s"
+                                  % (it + 1, self.max_epochs,
+                                     batch_it_train, str(loss)))
+                        else:
+                            print("train it: %d/%d, batch: %d/%d, loss: %s"
+                                  % (it + 1, self.max_epochs,
+                                     batch_it_train, self.max_iter_train,
+                                     str(loss)))
 
                     batch_it_train += 1
 
@@ -140,8 +155,15 @@ class BasicTrainer(object):
                         loss_batch_validation.append(loss)
 
                         if self.verbose:
-                            print("validation it: %d, batch: %d, loss: %s"
-                                  % (it, batch_it_validation, str(loss)))
+                            if self.max_iter_validation is None:
+                                print("validation it: %d/%d, batch: %d, loss: %s"
+                                      % (it + 1, self.max_epochs,
+                                         batch_it_validation, str(loss)))
+                            else:
+                                print("validation it: %d/%d, batch: %d/%d, loss: %s"
+                                      % (it + 1, self.max_epochs,
+                                         batch_it_validation, self.max_iter_validation,
+                                         str(loss)))
 
                         batch_it_validation += 1
 
@@ -169,8 +191,13 @@ class BasicTrainer(object):
                     loss_test.append(loss)
 
                     if self.verbose:
-                        print("test batch: %d, loss: %s"
-                              % (batch_it_test, str(loss)))
+                        if self.max_iter_test is None:
+                            print("test batch: %d, loss: %s"
+                                  % (batch_it_test, str(loss)))
+                        else:
+                            print("test batch: %d/%d, loss: %s"
+                                  % (batch_it_test, self.max_iter_test,
+                                     str(loss)))
 
                     batch_it_test += 1
 
@@ -190,7 +217,7 @@ class BasicTrainer(object):
         return tuple(ret_list)
 
 
-class CVTrainer(object):
+class CVTrainer(BaseTraner):
     """A trainer class that uses cross-validation to estimate the validation
     error.
 

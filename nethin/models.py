@@ -12,7 +12,7 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 """
 import abc
 import json
-from six import with_metaclass, string_types
+import six
 import warnings
 
 import h5py
@@ -34,6 +34,7 @@ from keras.layers.convolutional import ZeroPadding2D
 from keras.layers import Input, Activation, Dropout, Dense, Flatten, Lambda
 from keras.layers import Concatenate, Add
 from keras.optimizers import Optimizer, Adam, RMSprop
+from keras.engine import Layer
 import keras.optimizers as optimizers
 import keras.activations
 import keras.initializers
@@ -78,7 +79,7 @@ __all__ = ["BaseModel",
 #    """
 
 
-class BaseModel(with_metaclass(abc.ABCMeta, object)):
+class BaseModel(six.with_metaclass(abc.ABCMeta, object)):
     # TODO: Add fit_generator, evaluate_generator and predict_generator
     # TODO: What about get_layer?
     def __init__(self, nethin_name, data_format=None, device=None, name=None):
@@ -1420,7 +1421,7 @@ class UNet(BaseModel):
             self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
         self._activations_orig = activations
-        if isinstance(activations, string_types):
+        if isinstance(activations, six.string_types):
             activations_enc = [self._with_device(Activation,
                                                  activations)
                                for i in range(len(num_conv_layers))]
@@ -1438,14 +1439,26 @@ class UNet(BaseModel):
 
             activations_enc = [None] * len(activations)
             for i in range(len(activations)):
-                activations_enc[i] = self._with_device(Activation,
-                                                       activations[i])
+                if isinstance(activations[i], six.string_types):
+                    activations_enc[i] = self._with_device(Activation,
+                                                           activations[i])
+                elif isinstance(activations[i], Layer):
+                    activations_enc[i] = activations[i]
+                else:
+                    raise ValueError("``activations`` must be a str, or a "
+                                     "tuple of str or ``Activation``.")
             self.activations_enc = tuple(activations_enc)
 
             activations_dec = [None] * len(activations)
             for i in range(len(activations)):
-                activations_dec[i] = self._with_device(Activation,
-                                                       activations[i])
+                if isinstance(activations[i], six.string_types):
+                    activations_dec[i] = self._with_device(Activation,
+                                                           activations[i])
+                elif isinstance(activations[i], Layer):
+                    activations_dec[i] = activations[i]
+                else:
+                    raise ValueError("``activations`` must be a str, or a "
+                                     "tuple of str or ``Activation``.")
             self.activations_dec = tuple(activations_dec)
 
         else:

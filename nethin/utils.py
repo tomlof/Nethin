@@ -10,6 +10,7 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
+import six
 import json
 import base64
 
@@ -18,9 +19,16 @@ import scipy.interpolate as interpolate
 
 import tensorflow as tf
 import keras.backend as K
+import keras.engine
 from keras.engine.topology import _to_snake_case as to_snake_case
+from keras.utils.generic_utils import serialize_keras_object, \
+                                      deserialize_keras_object, \
+                                      func_dump, \
+                                      func_load
 
-__all__ = ["Helper", "with_device", "to_snake_case",
+__all__ = ["Helper", "get_device_string", "with_device",
+           "serialize_activations", "deserialize_activations",
+           "to_snake_case",
            "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
            "simple_bezier", "dynamic_histogram_warping"]
@@ -184,6 +192,23 @@ class TensorflowHelper(object):
 Helper = TensorflowHelper
 
 
+def get_device_string(cpu=None, gpu=None, num=0):
+
+    if (cpu is None) and (gpu is None):
+        gpu = True
+
+    if cpu == gpu:
+        raise ValueError('Both "cpu" and "gpu" cannot be True (or False) at '
+                         'the same time.')
+
+    num = int(num)
+
+    if cpu:
+        return "/device:CPU:" + str(num)
+    if gpu:
+        return "/device:GPU:" + str(num)
+
+
 def with_device(__device, function, *args, **kwargs):
     """Run a given function (with given arguments) on a particular device.
 
@@ -211,6 +236,151 @@ def with_device(__device, function, *args, **kwargs):
             ret = function(*args, **kwargs)
 
     return ret
+
+
+def serialize_activations(activations):
+
+    if activations is None:
+        return activations
+
+    def serialize_one(activation):
+        if isinstance(activation, six.string_types):
+            return activation
+
+        if isinstance(activation, keras.engine.Layer):  # Advanced activation
+            return serialize_keras_object(activation)
+
+        # The order matters here, since Layers are also callable.
+        if callable(activation):  # A function
+            return func_dump(activation)
+
+        # Keras serialized config
+        if isinstance(activation, dict) \
+                and "class_name" in activation \
+                and "config" in activation:
+            return activation
+
+        # Could be a marshalled function
+        if isinstance(activation, (list, tuple)) \
+                and len(activation) == 3 \
+                and isinstance(activation[0], six.string_types):
+            try:
+                # TODO: Better way to check if it is a marshalled function!
+                func_load(activation)  # Try to unmarshal it
+
+                return activation
+
+            except ValueError:
+                pass
+
+        return None
+
+    one = serialize_one(activations)  # See if it is only one
+
+    if (one is None) and isinstance(activations, (list, tuple)):
+
+        _activations = []
+        for activation in activations:
+
+            one = serialize_one(activation)
+            if one is not None:
+                _activations.append(one)
+            else:
+                raise ValueError("Unable to serialize activation functions.")
+
+        return _activations
+
+    elif one is not None:
+        return one
+
+    else:
+        raise ValueError("Unable to serialize activation functions.")
+
+
+def deserialize_activations(activations, length=None, device=None):
+    """Deserialize activation functions.
+
+    Parameters
+    ----------
+    activations : object or list
+        Serialized activation, or list of serialized activations.
+
+    length : int, optional
+        The normalized or expected length of the output list. If not None, the
+        length of the input ``activations`` is compared to this number. Also,
+        if an object instead of a list as input, the list will be made this
+        long. Default is None, which means to not normalize the outputs.
+
+    device : str, optional
+        A particular device to create the activations on. Default is ``None``,
+        which means to create on the default device (usually the first GPU
+        device). Use ``nethin.utils.Helper.get_device()`` to see available
+        devices.
+    """
+    if length is not None:
+        length = max(1, int(length))
+
+    def deserialize_one(activation):
+
+        # Simple activation
+        if isinstance(activation, six.string_types):
+            return with_device(device, Activation, activation)
+
+        # Advanced activation (it has already been created, nothing we can do)
+        if isinstance(activation, keras.engine.Layer):
+            return activation
+
+        # Function (it has already been created, nothing we can do)
+        if callable(activation):
+            return activation
+
+        # Keras serialized config
+        if isinstance(activation, dict) \
+                and "class_name" in activation \
+                and "config" in activation:
+
+            return with_device(device, deserialize_keras_object, activation)
+
+        # Could be a marshalled function
+        if isinstance(activation, (list, tuple)) \
+                and len(activation) == 3 \
+                and isinstance(activation[0], six.string_types):
+            try:
+                # TODO: Better way to check if it is a marshalled function!
+                return func_load(activation)  # Try to unmarshal it
+
+            except ValueError:
+                pass
+
+    one = deserialize_one(activations)
+
+    if one is not None:
+        if length is None:
+            return one
+        else:
+            _activations = [one]
+            for i in range(1, length):
+                one = deserialize_one(activations)
+                _activations.append(one)
+            return _activations
+    else:
+
+        if length is not None:
+            if length != len(activations):
+                raise ValueError("The number of activations does not match "
+                                 "length.")
+
+        _activations = []
+        for activation in activations:
+
+            one = deserialize_one(activation)
+
+            if one is None:
+                raise ValueError("Unable to deserialize activation functions.")
+
+            _activations.append(one)
+
+        return _activations
 
 
 def serialize_array(array):

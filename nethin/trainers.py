@@ -34,6 +34,12 @@ class BaseTraner(with_metaclass(abc.ABCMeta, object)):
         raise NotImplementedError('Abstract method "train" has not been '
                                   'specialised.')
 
+    def _get_checkpoint_name(self):
+        filename = "checkpoint_%s" \
+                % (time.strftime("%Y-%m-%d_%H.%M.%S", time.gmtime()),)
+
+        return filename
+
 
 class BasicTrainer(BaseTraner):
     """Basic trainer class used also as base class for other trainers.
@@ -52,7 +58,8 @@ class BasicTrainer(BaseTraner):
                  max_iter_train=None,
                  max_iter_validation=None,
                  max_iter_test=None,
-                 verbose=False):
+                 verbose=False,
+                 save_best=False):
 
         self.model_factory = model_factory
         self.input_channels = max(1, int(input_channels))
@@ -82,19 +89,29 @@ class BasicTrainer(BaseTraner):
             self.max_iter_test = max_iter_test
 
         self.verbose = bool(verbose)
+        self.save_best = bool(save_best)
 
         self.model_ = None
 
-    def train(self):
+    def train(self, keep_training=False):
         """Perform a full training program on the given model.
+
+        Parameters
+        ----------
+        keep_training : bool, optional, default: False
+            Whether or not to continue training using the last trained model.
+            If there is no previous model, a new one will be created and
+            trained. Default is False, create a new model to train.
         """
-        self.model_ = self.model_factory()
+        if (self.model_ is None) or (not keep_training):
+            self.model_ = self.model_factory()
 
         restart_train = True
         restart_validation = True
 
-        loss_train = []
-        loss_validation = []
+        self.loss_train_ = []
+        self.loss_validation_ = []
+        best_loss = np.inf
         for it in range(self.max_epochs):
 
             batch_it_train = 0
@@ -133,7 +150,7 @@ class BasicTrainer(BaseTraner):
 
             except (StopIteration) as e:
                 restart_train = True
-            loss_train.append(loss_batch_train)
+            self.loss_train_.append(loss_batch_train)
 
             if self.generator_validation is not None:
 
@@ -173,11 +190,34 @@ class BasicTrainer(BaseTraner):
 
                 except (StopIteration) as e:
                     restart_validation = True
-                loss_validation.append(loss_batch_validation)
+
+                self.loss_validation_.append(loss_batch_validation)
+
+                if self.save_best:
+                    try:
+                        val = float(loss_batch_validation[0][0])
+                        convertable = True
+                        print("loss val: " + str(val))
+                    except:
+                        convertable = False
+
+                    if convertable and hasattr(self.model_, "save"):
+                        _loss = []
+                        for l in loss_batch_validation:
+                            _loss.append(l[0])
+                        _loss = np.mean(_loss)
+                        print("_loss: " + str(_loss))
+                        if _loss < best_loss:
+                            best_loss = _loss
+                            print("new best loss: " + str(_loss))
+
+                            filename = self._get_checkpoint_name() \
+                                    + "_%f.h5" % (float(_loss),)
+                            self.model_.save(filename)
 
         if self.generator_test is not None:
             batch_it_test = 0
-            loss_test = []
+            self.loss_test_ = []
             generator_test = self.generator_test()
             try:
                 while True:
@@ -188,7 +228,7 @@ class BasicTrainer(BaseTraner):
 
                     loss = self.model_.test_on_batch(inputs, outputs)
 
-                    loss_test.append(loss)
+                    self.loss_test_.append(loss)
 
                     if self.verbose:
                         if self.max_iter_test is None:
@@ -208,11 +248,11 @@ class BasicTrainer(BaseTraner):
             except (StopIteration) as e:
                 pass
 
-        ret_list = [loss_train]
+        ret_list = [self.loss_train_]
         if self.generator_validation is not None:
-            ret_list.append(loss_validation)
+            ret_list.append(self.loss_validation_)
         if self.generator_test is not None:
-            ret_list.append(loss_test)
+            ret_list.append(self.loss_test_)
 
         return tuple(ret_list)
 

@@ -13,6 +13,7 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 import os
 import re
 import abc
+import six
 import datetime
 
 import numpy as np
@@ -34,7 +35,11 @@ try:
     import dicom
     _HAS_DICOM = True
 except (ImportError):
-    _HAS_DICOM = False
+    try:
+        import pydicom as dicom
+        _HAS_DICOM = True
+    except (ImportError):
+        _HAS_DICOM = False
 
 __all__ = ["BaseGenerator",
            "ImageGenerator", "ArrayGenerator",
@@ -475,7 +480,10 @@ class ArrayGenerator(BaseGenerator):
     [[-0.70318731 -0.49028236]
      [-0.32181433 -1.75507872]]
     """
-    def __init__(self, X, batch_size=32, wrap_around=False,
+    def __init__(self,
+                 X,
+                 batch_size=32,
+                 wrap_around=False,
                  restart_generation=False):
 
         self.X = np.atleast_1d(X)
@@ -1450,7 +1458,7 @@ class Numpy3DGenerator(BaseGenerator):
 
     Parameters
     ----------
-    dir_path : str
+    dir_path : str, or list of str
         Path to the directory containing the images.
 
     image_key : str
@@ -1532,7 +1540,10 @@ class Numpy3DGenerator(BaseGenerator):
                  data_format=None,
                  random_state=None):
 
-        self.dir_path = str(dir_path)
+        if isinstance(dir_path, six.string_types):
+            dir_path = [dir_path]
+        dir_path = list(dir_path)
+        self.dir_path = [str(d) for d in dir_path]
         self.image_key = str(image_key)
 
         if file_names is None:
@@ -1559,7 +1570,7 @@ class Numpy3DGenerator(BaseGenerator):
                                                                          "randint",
                                                                          "choice"])
 
-        self._all_files = self._list_dir()  # ["image1.npz", "image2.npz"]
+        self._all_files = self._list_dir()  # ["~usr/im1.npz", "~usr/im2.npz"]
         self._file_i = 0
         self._average_num_slices = 1.0
         self._num_updates = 0
@@ -1579,15 +1590,17 @@ class Numpy3DGenerator(BaseGenerator):
         self._throw_stop_iteration = False
 
     def _list_dir(self):
-        all_files = os.listdir(self.dir_path)
         all_images = []
-        for file in all_files:
-            if file.endswith(".npz"):
-                if os.path.isfile(os.path.join(self.dir_path, file)):
-                    if self.file_names is None:
-                        all_images.append(file)
-                    elif file in self.file_names:
-                        all_images.append(file)
+        for dir_ in self.dir_path:
+            all_files = os.listdir(dir_)
+            for file in all_files:
+                if file.endswith(".npz"):
+                    full_file = os.path.join(dir_, file)
+                    if os.path.isfile(full_file):
+                        if self.file_names is None:
+                            all_images.append(full_file)
+                        elif file in self.file_names:
+                            all_images.append(full_file)
 
         return all_images
 
@@ -1600,8 +1613,9 @@ class Numpy3DGenerator(BaseGenerator):
     def _slice_queue_update(self, file):
 
         try:
-            full_file = os.path.join(self.dir_path, file)
-            image = self._read_file(full_file)
+            # full_file = os.path.join(self.dir_path, file)
+            # image = self._read_file(full_file)
+            image = self._read_file(file)
         except (KeyError) as e:
             raise ValueError('Key "%s" does not exist in image file "%s".'
                              % (self.image_key, file))

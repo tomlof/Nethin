@@ -20,18 +20,25 @@ import scipy.interpolate as interpolate
 import tensorflow as tf
 import keras.backend as K
 import keras.engine
-from keras.engine.topology import _to_snake_case as to_snake_case
+try:
+    from keras.engine.topology import _to_snake_case as to_snake_case
+except ImportError:
+    from keras.engine.base_layer import _to_snake_case as to_snake_case
 from keras.utils.generic_utils import serialize_keras_object, \
                                       deserialize_keras_object, \
                                       func_dump, \
                                       func_load
+import keras.activations as keras_activations
+import keras.layers.advanced_activations as keras_advanced_activations
+from keras.layers import Activation
 
 __all__ = ["Helper", "get_device_string", "with_device",
            "serialize_activations", "deserialize_activations",
            "to_snake_case",
            "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
-           "simple_bezier", "dynamic_histogram_warping"]
+           "simple_bezier", "dynamic_histogram_warping",
+           "ExceedingThresholdException"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
@@ -323,7 +330,7 @@ def deserialize_activations(activations, length=None, device=None):
     def deserialize_one(activation):
 
         # Simple activation
-        if isinstance(activation, six.string_types):
+        if (activation is None) or isinstance(activation, six.string_types):
             return with_device(device, Activation, activation)
 
         # Advanced activation (it has already been created, nothing we can do)
@@ -339,7 +346,20 @@ def deserialize_activations(activations, length=None, device=None):
                 and "class_name" in activation \
                 and "config" in activation:
 
-            return with_device(device, deserialize_keras_object, activation)
+            # Make advanced activation functions available per default
+            if activation["class_name"] in dir(keras_advanced_activations):
+                custom_objects = {}
+                class_name = activation["class_name"]
+                for attr in dir(keras_advanced_activations):
+                    if class_name == attr:
+                        layer = keras_advanced_activations.__dict__[class_name]
+                        custom_objects[class_name] = layer
+                        break
+
+            return with_device(device,
+                               keras_activations.deserialize,
+                               activation,
+                               custom_objects=custom_objects)
 
         # Could be a marshalled function
         if isinstance(activation, (list, tuple)) \
@@ -349,8 +369,13 @@ def deserialize_activations(activations, length=None, device=None):
                 # TODO: Better way to check if it is a marshalled function!
                 return func_load(activation)  # Try to unmarshal it
 
+            except EOFError:
+                pass  # "marshal data too short" => Not a marshalled function
+
             except ValueError:
-                pass
+                pass  # ??
+
+        return None
 
     one = deserialize_one(activations)
 
@@ -1133,6 +1158,201 @@ def histogram_matching(A, B, return_cost=False, num_cost_interp=100):
         return matched_B, cost
     else:
         return matched_B
+
+
+class RangeType(object):
+
+    def __init__(self, start=None, stop=None, dtype=float, size=None):
+
+        if start is None:
+            self.start = None
+        else:
+            if dtype is int:
+                self.start = min(int(start), int(stop))
+            else:
+                self.start = min(float(start), float(stop))
+        if stop is None:
+            self.stop = None
+        else:
+            if dtype is int:
+                self.stop = max(int(start), int(stop))
+            else:
+                self.stop = max(float(start), float(stop))
+
+        if dtype is None:
+            self.dtype = None
+        else:
+            assert(dtype is float or dtype is int or dtype is bool)
+            self.dtype = dtype
+
+        if size is None:
+            self.size = None
+        else:
+            self.size = max(0, int(size))
+
+
+class UniformRange(RangeType):
+
+    def __init__(self, start, stop, dtype=float, size=None):
+
+        super(UniformRange, self).__init__(start, stop, dtype=dtype, size=size)
+
+    def get_random(self):
+
+        ret = []
+        for i in range(1 if self.size is None else self.size):
+            if self.dtype is int:
+                ret.append(np.random.randint(self.start, self.stop + 1))
+            else:  # self.dtype is float
+                ret.append(
+                    np.random.rand() * (self.stop - self.start) + self.start)
+
+        if self.size is None:
+            ret = ret[0]
+
+        return ret
+
+
+class LogRange(RangeType):
+
+    def __init__(self, start, stop, dtype=float, base=10, size=None):
+
+        super(LogRange, self).__init__(start, stop, dtype=dtype, size=size)
+
+        self.base = float(base)
+
+    def get_random(self):
+
+        ret = []
+        for i in range(1 if self.size is None else self.size):
+            if self.dtype is int:
+                rand = np.random.randint(self.start, self.stop + 1)
+                ret.append(int((self.base**rand) + 0.5))
+            else:
+                rand = np.random.rand() * (self.stop - self.start) + self.start
+                ret.append(self.base**rand)
+
+        if self.size is None:
+            ret = ret[0]
+
+        return ret
+
+
+class CategoryRange(RangeType):
+
+    def __init__(self, categories, probs=None, size=None):
+
+        super(CategoryRange, self).__init__(size=size)
+
+        self.categories = list(categories)
+        if probs is None:
+            self.probs = None
+        else:
+            probs = [max(0.0, min(float(prob), 1.0)) for prob in probs]
+            sum_probs = sum(probs)
+            self.probs = [prob / sum_probs for prob in probs]
+            assert(len(self.probs) == len(self.categories))
+
+    def get_random(self):
+
+        ret = []
+        for i in range(1 if self.size is None else self.size):
+            if self.probs is None:
+                rand = self.categories[np.random.randint(len(self.categories))]
+            else:
+                csum = np.cumsum(self.probs)
+                r = np.random.rand()
+                for cs in range(len(csum)):
+                    if r <= csum[cs]:
+                        rand = self.categories[cs]
+                        break
+
+            ret.append(rand)
+
+        if self.size is None:
+            ret = ret[0]
+
+        return ret
+
+
+class LabelEncodeRange(RangeType):
+
+    def __init__(self, num_labels, dtype=int):
+
+        super(LabelEncodeRange, self).__init__(dtype=dtype)
+
+        self.num_labels = max(1, int(num_labels))
+
+    def get_random(self):
+
+        if self.dtype is float:
+            rand = [0.0] * self.num_labels
+            rand[np.random.randint(self.num_labels)] = 1.0
+        elif self.dtype is int:
+            rand = [0] * self.num_labels
+            rand[np.random.randint(self.num_labels)] = 1
+        else:  # self.dtype is bool:
+            rand = [False] * self.num_labels
+            rand[np.random.randint(self.num_labels)] = True
+
+        return rand
+
+
+class BoolRange(RangeType):
+
+    def __init__(self, size=None):
+
+        super(BoolRange, self).__init__(size=size)
+
+    def get_random(self):
+
+        ret = []
+        for i in range(1 if self.size is None else self.size):
+            rand = np.random.randint(2) == 0
+            ret.append(rand)
+
+        if self.size is None:
+            ret = ret[0]
+
+        return ret
+
+
+class CartesianProduct(object):
+
+    def __init__(self, **kwargs):
+        self.vars = kwargs
+        self.constraints = {}
+
+    def get_random(self):
+
+        result = dict()
+        for var in self.vars:
+            if var in self.constraints:
+                rel, constr = self.constraints[var]
+                val = result[rel]
+            else:
+                val = None
+
+                def constr(*args):
+                    return True
+
+            while True:
+                res = self.vars[var].get_random()
+
+                if constr(res, val):
+                    break
+
+            result[var] = res
+
+        return result
+
+    def add_constraints(self, contraints):
+        for key in contraints:
+            self.constraints[key[0]] = [key[1], contraints[key]]
+
+
+class ExceedingThresholdException(Exception):
+    pass
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@ from six import with_metaclass
 import numpy as np
 import skimage.transform as transform
 
-from keras.utils import conv_utils
+try:
+    from keras.utils.conv_utils import normalize_data_format
+except ImportError:
+    from keras.backend.common import normalize_data_format
 
 __all__ = ["BaseAugmentation",
            "ImageResize", "ImageCrop", "ImageFlip",
@@ -49,7 +52,7 @@ class BaseAugmentation(with_metaclass(abc.ABCMeta, object)):
                  data_format=None,
                  random_state=None):
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.data_format = normalize_data_format(data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__  # Numpy built-in
@@ -118,6 +121,11 @@ class ImageResize(BaseAugmentation):
         allowed range of values for your data. This must be handled manually.
 
         Default is 1, i.e. bi-linear interpolation.
+
+    anti_aliasing : bool, optional
+        Whether or not to apply a Gaussian filter to smooth the image prior to
+        down-scaling. When down-sampling the image, filtering helps to avoid
+        aliasing artifacts. Default is True, use anti-aliasing.
 
     data_format : str, optional
         One of `channels_last` (default) or `channels_first`. The ordering of
@@ -189,6 +197,7 @@ class ImageResize(BaseAugmentation):
                  keep_aspect_ratio=False,
                  minimum_size=True,
                  order=1,
+                 anti_aliasing=False,  # TODO: Toggle when using skimage 0.15.
                  data_format=None,
                  random_state=None):
 
@@ -211,11 +220,12 @@ class ImageResize(BaseAugmentation):
             raise ValueError('``order`` must be in [0, 5].')
         self.order = int(order)
 
+        self.anti_aliasing = bool(anti_aliasing)
+
         if self.data_format == "channels_last":
             self._axis_offset = 0
         else:  # data_format == "channels_first":
             self._axis_offset = 1
-
 
     def __call__(self, inputs):
 
@@ -240,6 +250,8 @@ class ImageResize(BaseAugmentation):
         else:
             new_size = size_
 
+        aa = self.anti_aliasing
+
         if self.data_format == "channels_last":
             num_channels = inputs.shape[2]
             outputs = np.zeros(new_size + [num_channels])
@@ -249,7 +261,8 @@ class ImageResize(BaseAugmentation):
                                                     order=self.order,
                                                     mode="edge",  # TODO: Opt?
                                                     clip=False,
-                                                    preserve_range=True)
+                                                    preserve_range=True,
+                                                    anti_aliasing=aa)
             # outputs[:, :, c] = imresize(inputs[:, :, c], new_size,
             #                             interp=self.method)
         else:  # data_format == "channels_first":
@@ -261,7 +274,8 @@ class ImageResize(BaseAugmentation):
                                                     order=self.order,
                                                     mode="edge",  # TODO: Opt?
                                                     clip=False,
-                                                    preserve_range=True)
+                                                    preserve_range=True,
+                                                    anti_aliasing=aa)
                 # outputs[c, :, :] = imresize(inputs[:, :, c], new_size,
                 #                             interp=self.method)
 
@@ -433,7 +447,7 @@ class ImageCrop(BaseAugmentation):
 
             slices.append(slice(coord[i], coord[i] + crop[i]))
 
-        outputs = inputs[slices]
+        outputs = inputs[tuple(slices)]
 
         return outputs
 

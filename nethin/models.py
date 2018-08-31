@@ -22,25 +22,34 @@ import tensorflow as tf
 import keras.backend as K
 from keras.models import Sequential, Model, load_model
 from keras.utils import conv_utils
+try:
+    from keras.utils.conv_utils import normalize_data_format
+except ImportError:
+    from keras.backend.common import normalize_data_format
 from keras.initializers import TruncatedNormal
 from keras.engine.topology import get_source_inputs
 from keras.layers.merge import Add
-from keras.layers.pooling import MaxPooling2D
+from keras.layers.pooling import MaxPooling1D
+from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from keras.layers.pooling import GlobalAveragePooling2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.normalization import BatchNormalization
+from keras.layers.convolutional import Convolution1D
 from keras.layers.convolutional import Convolution2D, UpSampling2D
 from keras.layers.convolutional import Convolution2DTranspose
 from keras.layers.convolutional import ZeroPadding2D
-from keras.layers import Input, Activation, Dropout, Dense, Flatten, Lambda
-from keras.layers import Concatenate, Add
+from keras.layers import Input, Activation, Dropout, SpatialDropout2D, Dense
+from keras.layers import Flatten, Lambda, Concatenate, Add
+from keras.layers.merge import concatenate
 from keras.optimizers import Optimizer, Adam, RMSprop
 from keras.engine import Layer
-import keras.optimizers as optimizers
+import keras.optimizers
 import keras.activations
 import keras.initializers
-import keras.losses as losses
+import keras.regularizers
+import keras.losses
 
-from nethin.utils import with_device, Helper, to_snake_case
+from nethin.utils import get_device_string, with_device, Helper, to_snake_case
 import nethin.consts as consts
 import nethin.utils as utils
 import nethin.padding as padding
@@ -86,7 +95,7 @@ class BaseModel(six.with_metaclass(abc.ABCMeta, object)):
 
         self._nethin_name = str(nethin_name)
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.data_format = normalize_data_format(data_format)
 
         if device is not None:
             device = str(device)
@@ -714,7 +723,7 @@ class ConvolutionalNetwork(BaseModel):
 
     Parameters
     ----------
-    input_shape : tuple of ints, length 3
+    input_shape : tuple of ints, length 2 or 3
         The shape of the input data, excluding the batch dimension.
 
     num_filters : tuple of int, optional
@@ -736,30 +745,27 @@ class ConvolutionalNetwork(BaseModel):
         The activations to use in each subsampling path. If a single str or
         Layer, the same activation will be used for all layers. If a tuple,
         then it must have the same length as ``num_conv_layers``. Default
-        is "relu".
+        is ``"relu"``.
 
     dense_sizes : tuple of int, optional
-        The number of dense layers following the convolution. Default is (1,),
-        which means to output a single value.
+        The number of dense layers following the convolution. Default is
+        ``(1,)``, which means to output a single value.
 
     dense_activations : str or Activation, optional
         The activation to use for the dense layers and the network output.
-        Default is "sigmoid".
+        Default is ``"sigmoid"``.
 
     use_batch_normalization : bool, optional
         Whether or not to use batch normalization after each convolution in the
         encoding part. Default is True, use batch normalization.
 
-    use_dropout : bool, optional
-        Whether or not to use dropout on the dense layers. Default is True, use
-        dropout.
-
     dropout_rate : float, optional
-        Float in [0, 1]. The dropout rate, if dropout is used. Default is 0.5.
+        Float in [0, 1]. The dropout rate for the dense layers. A dropout rate
+        of 0 means no dropout is used. Default is ``0.5``.
 
     use_maxpool : bool, optional
         Whether or not to use maxpooling instead of strided convolutions when
-        subsampling. Default is True, use maxpooling.
+        subsampling. Default is ``True``, use maxpooling.
 
     data_format : str, optional
         One of ``channels_last`` (default) or ``channels_first``. The ordering
@@ -772,11 +778,11 @@ class ConvolutionalNetwork(BaseModel):
 
     device : str, optional
         A particular device to run the model on. Default is ``None``, which
-        means to run on the default device (usually "/gpu:0"). Use
+        means to run on the default device (usually ``"/device:GPU:0"``). Use
         ``nethin.utils.Helper.get_device()`` to see available devices.
 
     name : str, optional
-        The name of the network. Default is "ConvolutionalNetwork".
+        The name of the network. Default is ``"ConvolutionalNetwork"``.
 
     Examples
     --------
@@ -794,7 +800,6 @@ class ConvolutionalNetwork(BaseModel):
     >>> dense_sizes = (1,)
     >>> dense_activations = "sigmoid"
     >>> use_batch_normalization = True
-    >>> use_dropout = True
     >>> dropout_rate = 0.5
     >>> use_maxpool = True
     >>> data_format = "channels_last"
@@ -811,7 +816,6 @@ class ConvolutionalNetwork(BaseModel):
     ...                                            dense_sizes=dense_sizes,
     ...                                            dense_activations=dense_activations,
     ...                                            use_batch_normalization=use_batch_normalization,
-    ...                                            use_dropout=use_dropout,
     ...                                            dropout_rate=dropout_rate,
     ...                                            use_maxpool=use_maxpool,
     ...                                            data_format=data_format,
@@ -836,7 +840,6 @@ class ConvolutionalNetwork(BaseModel):
                  dense_sizes=(1,),
                  dense_activations=("sigmoid",),
                  use_batch_normalization=True,
-                 use_dropout=True,
                  dropout_rate=0.5,
                  use_maxpool=True,
                  data_format=None,
@@ -850,6 +853,8 @@ class ConvolutionalNetwork(BaseModel):
                 name=name)
 
         self.input_shape = tuple([int(s) for s in input_shape])
+        assert(len(self.input_shape) in [2, 3])
+        self._input_dim = len(self.input_shape) - 1
 
         if len(num_filters) < 1:
             raise ValueError("``num_conv_layers`` must have length at least "
@@ -884,7 +889,8 @@ class ConvolutionalNetwork(BaseModel):
             _activations = [None] * len(activations)
             for i in range(len(activations)):
                 if isinstance(activations[i], str) or activations[i] is None:
-                    _activations[i] = self._with_device(Activation, activations[i])
+                    _activations[i] = self._with_device(Activation,
+                                                        activations[i])
                 else:
                     _activations[i] = activations[i]
 
@@ -919,31 +925,34 @@ class ConvolutionalNetwork(BaseModel):
 
         self.use_batch_normalization = bool(use_batch_normalization)
 
-        if isinstance(use_dropout, bool):
-            do = [bool(use_dropout) for i in range(len(self.dense_sizes))]
-            self.use_dropout = tuple(do)
+        if isinstance(dropout_rate, (int, float)):
+            do = [max(0.0, min(float(dropout_rate), 1.0))
+                  for i in range(len(self.dense_sizes))]
+            self.dropout_rate = tuple(do)
 
-        elif len(use_dropout) != len(self.dense_sizes):
-            raise ValueError("``use_dropout`` should have the same length as "
-                             "`dense_sizes``.")
+        elif len(dropout_rate) != len(self.dense_sizes):
+            raise ValueError("``dropout_rate`` should have the same length as "
+                             "``dense_sizes``.")
 
-        elif isinstance(use_dropout, (list, tuple)):
+        elif isinstance(dropout_rate, (list, tuple)):
 
-            do = [bool(use_dropout[i]) for i in range(len(use_dropout))]
-            self.use_dropout = tuple(do)
+            do = [max(0.0, min(float(dropout_rate[i]), 1.0))
+                  for i in range(len(dropout_rate))]
+            self.dropout_rate = tuple(do)
 
         else:
-            raise ValueError("``use_dropout`` must be a str, or a tuple of "
-                             "str or ``Activation``.")
-
-        self.dropout_rate = max(0.0, min(float(dropout_rate), 1.0))
+            raise ValueError("``dropout_rate`` must be a ``float``, or a "
+                             "tuple of ``float``.")
 
         self.use_maxpool = bool(use_maxpool)
 
         if self.data_format == "channels_last":
-            self._axis = 3
+            if self._input_dim == 1:
+                self._axis = 2  # (B, W, C)
+            else:
+                self._axis = 3  # (B, H, W, C)
         else:  # data_format == "channels_first":
-            self._axis = 1
+            self._axis = 1  # (B, C, H, W) or (B, C, W)
 
         self.model = self._with_device(self._generate_model)
 
@@ -960,27 +969,68 @@ class ConvolutionalNetwork(BaseModel):
             activation_i = self.activations[i]
             subsample_i = self.subsample[i]
 
-            x = Convolution2D(num_filters_i,
-                              (filter_size_i, filter_size_i),
-                              strides=(1, 1),
-                              padding="same",
-                              data_format=self.data_format)(x)
+            if self._input_dim == 1:
+                if self.data_format == "channels_last":
+                    x = Convolution1D(num_filters_i,
+                                      (filter_size_i,),
+                                      strides=(1,),
+                                      padding="same")(x)
+                else:
+                    x = layers.Convolution1D(num_filters_i,
+                                             (filter_size_i,),
+                                             strides=(1,),
+                                             padding="same",
+                                             data_format=self.data_format)(x)
+            else:  # self._input_dim = 2
+                x = Convolution2D(num_filters_i,
+                                  (filter_size_i, filter_size_i),
+                                  strides=(1, 1),
+                                  padding="same",
+                                  data_format=self.data_format)(x)
+
             if self.use_batch_normalization:
                 x = BatchNormalization(axis=self._axis)(x)
+
             x = activation_i(x)
 
             if subsample_i:
                 if self.use_maxpool:
-                    x = MaxPooling2D(pool_size=(2, 2),
-                                     strides=(2, 2),
-                                     padding="same",
-                                     data_format=self.data_format)(x)
+                    if self._input_dim == 1:
+                        if self.data_format == "channels_last":
+                            x = MaxPooling1D(pool_size=2,
+                                             strides=2,
+                                             padding="same")(x)
+                        else:
+                            x = layers.MaxPooling1D(
+                                            pool_size=2,
+                                            strides=2,
+                                            padding="same",
+                                            data_format=self.data_format)(x)
+                    else:  # self._input_dim == 2:
+                        x = MaxPooling2D(pool_size=(2, 2),
+                                         strides=(2, 2),
+                                         padding="same",
+                                         data_format=self.data_format)(x)
                 else:
-                    x = Convolution2D(num_filters_i,
-                                      (3, 3),
-                                      strides=(2, 2),
-                                      padding="same",
-                                      data_format=self.data_format)(x)
+                    if self._input_dim == 1:
+                        if self.data_format == "channels_last":
+                            x = Convolution1D(num_filters_i,
+                                              (3,),
+                                              strides=(2,),
+                                              padding="same")(x)
+                        else:
+                            x = layers.Convolution1D(
+                                            num_filters_i,
+                                            (3,),
+                                            strides=(2,),
+                                            padding="same",
+                                            data_format=self.data_format)(x)
+                    else:  # self._input_dim = 2
+                        x = Convolution2D(num_filters_i,
+                                          (3, 3),
+                                          strides=(2, 2),
+                                          padding="same",
+                                          data_format=self.data_format)(x)
 
         if len(self.dense_sizes) > 0:
             x = Flatten()(x)
@@ -988,13 +1038,14 @@ class ConvolutionalNetwork(BaseModel):
             for i in range(len(self.dense_sizes)):
                 size_i = self.dense_sizes[i]
                 activation_i = self.dense_activations[i]
-                use_dropout_i = self.use_dropout[i]
+                dropout_rate_i = self.dropout_rate[i]
 
                 x = Dense(size_i)(x)
-                x = activation_i(x)
+                if activation_i is not None:
+                    x = activation_i(x)
 
-                if use_dropout_i:
-                    x = Dropout(self.dropout_rate)(x)
+                if dropout_rate_i > 0.0 and (i < len(self.dense_sizes) - 1):
+                    x = Dropout(dropout_rate_i)(x)
 
         outputs = x
 
@@ -1244,6 +1295,12 @@ class UNet(BaseModel):
         then it must have the same length as ``num_conv_layers``. Default
         is "relu".
 
+    output_activation : str or Activation, optional
+        The final output activation. If set, make sure you set the last element
+        of ``dense_activations`` to ``None`` in order to not apply two
+        activations to the output. Default is no activation ("linear"
+        activation).
+
     use_downconvolution : bool, optional
         If True, uses downsampling followed by a 2x2 convolution for spatial
         downsampling. Default is False, which means to not use downconvolution.
@@ -1287,8 +1344,35 @@ class UNet(BaseModel):
         Whether or not to use batch normalization after each convolution in the
         encoding part. Default is False, do not use batch normalization.
 
+    dense_sizes : tuple of int, optional
+        The number of dense layers following the convolution. Default is
+        ``[]``, which means to have no dense layers.
+
+    dense_activations : str or Activation, optional
+        The activation to use for the dense layers and the network output. You
+        may want to set ``output_activation=None`` or the last element of
+        ``dense_activations`` to ``None`` in order to not apply two activations
+        to the output. Default is ``"relu"``.
+
+    dense_dropout : bool, optional
+        The rate at which weights are dropped. Default is 0.5, which means that
+        half of the weights are dropped in each iteration.
+
     kernel_initializer : str, keras.Initializer or Callable, optional
-        The initializer to use for all layers. Default is ``"glorot_uniform"``.
+        The initialiser to use for the weights of all layers. Default is
+        ``"glorot_uniform"``.
+
+    bias_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for all biases in all layers. Default is
+        ``"zeros"``, which means to initialise all biases to zero.
+
+    kernel_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the `kernel` weights matrix.
+
+    bias_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the bias vector.
 
     data_format : str, optional
         One of ``channels_last`` (default) or ``channels_first``. The ordering
@@ -1363,6 +1447,7 @@ class UNet(BaseModel):
                  num_filters=[64, 128, 256, 512, 1024],
                  filter_sizes=3,
                  activations="relu",
+                 output_activation=None,
                  use_downconvolution=False,
                  use_upconvolution=True,
                  use_strided_convolution=False,
@@ -1372,7 +1457,13 @@ class UNet(BaseModel):
                  use_maxunpooling_mask=False,
                  use_deconvolutions=False,
                  use_batch_normalization=False,
+                 dense_sizes=[],
+                 dense_activations="relu",
+                 dense_dropout=0.5,
                  kernel_initializer="glorot_uniform",
+                 bias_initializer="zeros",
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
                  data_format=None,
                  device=None,
                  name="UNet",
@@ -1421,49 +1512,61 @@ class UNet(BaseModel):
             self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
         self._activations_orig = activations
-        if isinstance(activations, six.string_types):
-            activations_enc = [self._with_device(Activation,
-                                                 activations)
-                               for i in range(len(num_conv_layers))]
-            self.activations_enc = tuple(activations_enc)
+        self.activations_enc = utils.deserialize_activations(activations,
+                                                             length=len(self.num_conv_layers),
+                                                             device=self.device)
+        self.activations_dec = utils.deserialize_activations(activations,
+                                                             length=len(self.num_conv_layers),
+                                                             device=self.device)
+#        if isinstance(activations, six.string_types):
+#            activations_enc = [self._with_device(Activation,
+#                                                 activations)
+#                               for i in range(len(num_conv_layers))]
+#            self.activations_enc = tuple(activations_enc)
+#
+#            activations_dec = [self._with_device(Activation,
+#                                                 activations)
+#                               for i in range(len(num_conv_layers))]
+#            self.activations_dec = tuple(activations_dec)
+#
+#        elif isinstance(activations, (list, tuple)):
+#            if len(activations) != len(num_conv_layers):
+#                raise ValueError("``activations`` should have the same length "
+#                                 "as ``num_conv_layers``.")
+#
+#            activations_enc = [None] * len(activations)
+#            for i in range(len(activations)):
+#                if isinstance(activations[i], six.string_types):
+#                    activations_enc[i] = self._with_device(Activation,
+#                                                           activations[i])
+#                elif isinstance(activations[i], Layer):
+#                    activations_enc[i] = activations[i]
+#                else:
+#                    raise ValueError("``activations`` must be a str, or a "
+#                                     "tuple of str or ``Activation``.")
+#            self.activations_enc = tuple(activations_enc)
+#
+#            activations_dec = [None] * len(activations)
+#            for i in range(len(activations)):
+#                if isinstance(activations[i], six.string_types):
+#                    activations_dec[i] = self._with_device(Activation,
+#                                                           activations[i])
+#                elif isinstance(activations[i], Layer):
+#                    activations_dec[i] = activations[i]
+#                else:
+#                    raise ValueError("``activations`` must be a str, or a "
+#                                     "tuple of str or ``Activation``.")
+#            self.activations_dec = tuple(activations_dec)
+#
+#        else:
+#            raise ValueError("``activations`` must be a str, or a tuple of "
+#                             "str or ``Activation``.")
 
-            activations_dec = [self._with_device(Activation,
-                                                 activations)
-                               for i in range(len(num_conv_layers))]
-            self.activations_dec = tuple(activations_dec)
-
-        elif isinstance(activations, (list, tuple)):
-            if len(activations) != len(num_conv_layers):
-                raise ValueError("``activations`` should have the same length "
-                                 "as ``num_conv_layers``.")
-
-            activations_enc = [None] * len(activations)
-            for i in range(len(activations)):
-                if isinstance(activations[i], six.string_types):
-                    activations_enc[i] = self._with_device(Activation,
-                                                           activations[i])
-                elif isinstance(activations[i], Layer):
-                    activations_enc[i] = activations[i]
-                else:
-                    raise ValueError("``activations`` must be a str, or a "
-                                     "tuple of str or ``Activation``.")
-            self.activations_enc = tuple(activations_enc)
-
-            activations_dec = [None] * len(activations)
-            for i in range(len(activations)):
-                if isinstance(activations[i], six.string_types):
-                    activations_dec[i] = self._with_device(Activation,
-                                                           activations[i])
-                elif isinstance(activations[i], Layer):
-                    activations_dec[i] = activations[i]
-                else:
-                    raise ValueError("``activations`` must be a str, or a "
-                                     "tuple of str or ``Activation``.")
-            self.activations_dec = tuple(activations_dec)
-
-        else:
-            raise ValueError("``activations`` must be a str, or a tuple of "
-                             "str or ``Activation``.")
+        self._output_activations_orig = output_activation
+        if isinstance(output_activation, six.string_types):
+            output_activation = self._with_device(Activation,
+                                                  output_activation)
+        self.output_activation = output_activation
 
         if use_downconvolution == False \
                 and use_strided_convolution == False \
@@ -1487,7 +1590,19 @@ class UNet(BaseModel):
         self.use_maxunpooling_mask = bool(use_maxunpooling_mask)
         self.use_deconvolutions = bool(use_deconvolutions)
         self.use_batch_normalization = bool(use_batch_normalization)
+        self.dense_sizes = tuple([int(ds) for ds in dense_sizes])
+
+        self._dense_activations_orig = dense_activations
+        self.dense_activations = utils.deserialize_activations(
+                                                  dense_activations,
+                                                  length=len(self.dense_sizes),
+                                                  device=self.device)
+
+        self.dense_dropout = max(0.0, min(float(dense_dropout), 1.0))
         self.kernel_initializer = keras.initializers.get(kernel_initializer)
+        self.bias_initializer = keras.initializers.get(bias_initializer)
+        self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
+        self.bias_regularizer = keras.regularizers.get(bias_regularizer)
 
         if self.data_format == "channels_last":
             self._axis = 3
@@ -1615,35 +1730,137 @@ class UNet(BaseModel):
             else:
                 config["device"] = device
 
-        # TODO: Required when device is None?
+        if config["use_maxunpooling"]:
+            if custom_objects is None:
+                custom_objects = dict()
+
+            # custom_objects["MaxPooling2D"] = layers.MaxPooling2D
+            custom_objects["MaxUnpooling2D"] = layers.MaxUnpooling2D
+
+            if config["use_maxunpooling_mask"]:
+                custom_objects["MaxPoolingMask2D"] = layers.MaxPoolingMask2D
+
+#        # TODO: First part of if is because of a previous bug. Remove!
+#        if (("maxpooling" not in config) or config["maxpooling"]) \
+#                and config["use_maxunpooling"] \
+#                and config["use_maxunpooling_mask"]:
+#
+#            _device = get_device_string(cpu=True, num=0)
+#            model_ = with_device(_device,
+#                                 load_model,
+#                                 filepath,
+#                                 custom_objects=custom_objects,
+#                                 compile=False)
+#            weights = model_.get_weights()
+#            del model_
+#
+#            unet = UNet.from_config(config)
+#            model = unet.model
+#            model.set_weights(weights)
+#
+#            if compile:
+#                def convert_custom_objects(obj, custom_objects={}):
+#                    """Handles custom object lookup.
+#
+#                    Arguments
+#                    ---------
+#                    obj: object, dict, or list
+#                        The object to convert.
+#
+#                    Returns
+#                    -------
+#                    The same structure, where occurrences
+#                        of a custom object name have been replaced
+#                        with the custom object.
+#                    """
+#                    if isinstance(obj, list):
+#                        deserialized = []
+#                        for value in obj:
+#                            deserialized.append(convert_custom_objects(value,
+#                                                                       custom_objects=custom_objects))
+#                        return deserialized
+#                    if isinstance(obj, dict):
+#                        deserialized = {}
+#                        for key, value in obj.items():
+#                            deserialized[key] = convert_custom_objects(value,
+#                                                                       custom_objects=custom_objects)
+#                        return deserialized
+#                    if obj in custom_objects:
+#                        return custom_objects[obj]
+#                    return obj
+#
+#                with h5py.File(filepath, mode="r") as f:
+#                    # instantiate optimizer
+#                    training_config = f.attrs.get('training_config')
+#
+#                    if training_config is None:
+#                        warnings.warn("No training configuration found in save file: "
+#                                      "the model was *not* compiled. Compile it "
+#                                      "manually.")
+#                        return unet
+#
+#                    training_config = json.loads(training_config.decode("utf-8"))
+#                    optimizer_config = training_config["optimizer_config"]
+#                    optimizer = keras.optimizers.deserialize(optimizer_config,
+#                                                             custom_objects=custom_objects or {})
+#
+#                    # Recover loss functions and metrics.
+#                    loss = convert_custom_objects(training_config["loss"],
+#                                                  custom_objects=custom_objects or {})
+#                    metrics = convert_custom_objects(training_config["metrics"],
+#                                                     custom_objects=custom_objects or {})
+#                    sample_weight_mode = training_config["sample_weight_mode"]
+#                    loss_weights = training_config["loss_weights"]
+#
+#                    # Compile model.
+#                    model.compile(optimizer=optimizer,
+#                                  loss=loss,
+#                                  metrics=metrics,
+#                                  loss_weights=loss_weights,
+#                                  sample_weight_mode=sample_weight_mode)
+#
+#                    # Set optimizer weights.
+#                    if "optimizer_weights" in f:
+#                        # Build train function (to get weight updates).
+#                        model._make_train_function()
+#                        optimizer_weights_group = f["optimizer_weights"]
+#                        optimizer_weight_names = [n.decode("utf8") for n in
+#                                                  optimizer_weights_group.attrs["weight_names"]]
+#                        optimizer_weight_values = [optimizer_weights_group[n] for n in
+#                                                   optimizer_weight_names]
+#                        try:
+#                            model.optimizer.set_weights(optimizer_weight_values)
+#                        except ValueError:
+#                            warnings.warn("Error in loading the saved optimizer "
+#                                          "state. As a result, your model is "
+#                                          "starting with a freshly initialized "
+#                                          "optimizer.")
+#        else:
         model = with_device(device,
                             load_model,
                             filepath,
                             custom_objects=custom_objects,
                             compile=compile)
-        # model = load_model(filepath,
-        #                    custom_objects=custom_objects,
-        #                    compile=compile)
-
-        def _find_layer(layer_name):
-            for layer in model.layers:
-                if layer.name == layer_name:
-                    return layer
-            return None
-
-#        # Deserialise the mask if there are unpooling layers
-#        for layer in model.layers:
-#            if layer.name.startswith("maxunpool"):
-#                if isinstance(layer, layers.MaxUnpooling2D):
-#                    if isinstance(layer.mask, str):
-#                        parts = layer.mask.split("/")
-#                        if len(parts) >= 2:
-#                            sought_layer_name = parts[0]
-#                            sought_layer = _find_layer(sought_layer_name)
-#                            if sought_layer is not None:
-#                                layer.mask = sought_layer.mask
 
         unet = UNet.from_config(config, _model=model)
+
+        #    def _find_layer(layer_name):
+        #        for layer in model.layers:
+        #            if layer.name == layer_name:
+        #                return layer
+        #        return None
+        #
+        #    # Deserialise the mask if there are unpooling layers
+        #    for layer in model.layers:
+        #        if layer.name.startswith("maxunpool"):
+        #            if isinstance(layer, layers.MaxUnpooling2D):
+        #                if isinstance(layer.mask, str):
+        #                    parts = layer.mask.split("/")
+        #                    if len(parts) >= 2:
+        #                        sought_layer_name = parts[0]
+        #                        sought_layer = _find_layer(sought_layer_name)
+        #                        if sought_layer is not None:
+        #                            layer.mask = sought_layer.mask
 
         return unet
 
@@ -1679,12 +1896,21 @@ class UNet(BaseModel):
         config["num_conv_layers"] = self.num_conv_layers
         config["num_filters"] = self.num_filters
         config["filter_sizes"] = self.filter_sizes
-        config["activations"] = self._activations_orig
+        config["activations"] = utils.serialize_activations(self._activations_orig)
+        config["output_activation"] = utils.serialize_activations(self._output_activations_orig)
+        config["use_downconvolution"] = self.use_downconvolution
         config["use_upconvolution"] = self.use_upconvolution
+        config["use_strided_convolution"] = self.use_strided_convolution
+        config["use_strided_deconvolution"] = self.use_strided_deconvolution
+        config["use_maxpooling"] = self.use_maxpooling
         config["use_maxunpooling"] = self.use_maxunpooling
         config["use_maxunpooling_mask"] = self.use_maxunpooling_mask
         config["use_deconvolutions"] = self.use_deconvolutions
         config["use_batch_normalization"] = self.use_batch_normalization
+        config["kernel_initializer"] = keras.initializers.serialize(self.kernel_initializer)
+        config["bias_initializer"] = keras.initializers.serialize(self.bias_initializer)
+        config["kernel_regularizer"] = keras.initializers.serialize(self.kernel_regularizer)
+        config["bias_regularizer"] = keras.initializers.serialize(self.bias_regularizer)
 
         return config
 
@@ -1702,6 +1928,9 @@ class UNet(BaseModel):
         config : dict
             Typically the output of get_config.
 
+        _model : nethin.models.UNet, optional
+            A previously created Keras UNet model.
+
         Returns
         -------
             An instance of the model.
@@ -1712,8 +1941,14 @@ class UNet(BaseModel):
             If "input_shape" is not in the ``config`` dictionary.
         """
         input_shape = config.pop("input_shape")
+        try:
+            unet = cls(input_shape, **config, _model=_model)
+            config["input_shape"] = input_shape
+        except Exception as e:
+            config["input_shape"] = input_shape
+            raise e
 
-        return cls(input_shape, **config, _model=_model)
+        return unet
 
     def set_weights(self, weights):
         """Sets the weights of the model.
@@ -1768,7 +2003,7 @@ class UNet(BaseModel):
 
         # Build the encoding part (contractive path)
         skip_connections = []
-        maxpooling_layers = []
+        maxpooling_masks = []
         for i in range(len(self.num_conv_layers) - 1):
 
             num_conv_layers_i = self.num_conv_layers[i]
@@ -1776,6 +2011,9 @@ class UNet(BaseModel):
             filter_sizes_i = self.filter_sizes[i]
             activation_function_i = self.activations_enc[i]
             kernel_initializer_i = self.kernel_initializer
+            bias_initializer_i = self.bias_initializer
+            kernel_regularizer_i = self.kernel_regularizer
+            bias_regularizer_i = self.bias_regularizer
 
             for j in range(num_conv_layers_i):
                 x = Convolution2D(num_filters_i,
@@ -1783,7 +2021,10 @@ class UNet(BaseModel):
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format,
-                                  kernel_initializer=kernel_initializer_i)(x)
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
 
                 if self.use_batch_normalization:
                     x = BatchNormalization(axis=self._axis)(x)
@@ -1793,23 +2034,32 @@ class UNet(BaseModel):
             skip_connections.append(x)
 
             if self.use_maxpooling:
-                if self.use_maxunpooling:
-                    pool_name = "maxpool_%d" % (i,)
-                    pool_name = pool_name + "_" + str(K.get_uid(pool_name))
-                    maxpooling = layers.MaxPooling2D(pool_size=(2, 2),
-                                                     strides=(2, 2),
-                                                     padding="same",
-                                                     data_format=self.data_format,
-                                                     compute_mask=self.use_maxunpooling_mask,
-                                                     name=pool_name)
-                    x = maxpooling(x)
-    
-                    maxpooling_layers.append(maxpooling)
-                else:
-                    x = MaxPooling2D(pool_size=(2, 2),
-                                     strides=(2, 2),
-                                     padding="same",
-                                     data_format=self.data_format)(x)
+                if self.use_maxunpooling and self.use_maxunpooling_mask:
+                    # pool_name = "maxpool_%d" % (i,)
+                    # pool_name = pool_name + "_" + str(K.get_uid(pool_name))
+                    # maxpooling = layers.MaxPooling2D(pool_size=(2, 2),
+                    #                                  strides=(2, 2),
+                    #                                  padding="same",
+                    #                                  data_format=self.data_format,
+                    #                                  compute_mask=self.use_maxunpooling_mask,
+                    #                                  name=pool_name)
+                    # if self.use_maxunpooling_mask:
+                    mask = layers.MaxPoolingMask2D(
+                                              pool_size=(2, 2),
+                                              strides=(2, 2),
+                                              padding="same",
+                                              data_format=self.data_format)(x)
+                    maxpooling_masks.append(mask)
+
+                    # x = MaxPooling2D(pool_size=(2, 2),
+                    #                  strides=(2, 2),
+                    #                  padding="same",
+                    #                  data_format=self.data_format)(x)
+                # else:
+                x = MaxPooling2D(pool_size=(2, 2),
+                                 strides=(2, 2),
+                                 padding="same",
+                                 data_format=self.data_format)(x)
 
             elif self.use_strided_convolution:
                 x = Convolution2D(num_filters_i,
@@ -1817,7 +2067,10 @@ class UNet(BaseModel):
                                   strides=(2, 2),  # Downsampling
                                   padding="same",
                                   data_format=self.data_format,
-                                  kernel_initializer=kernel_initializer_i)(x)
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
 
             elif self.use_downconvolution:
                 x = layers.Resampling2D(
@@ -1833,6 +2086,9 @@ class UNet(BaseModel):
         filter_sizes_i = self.filter_sizes[-1]
         activation_function_i = self.activations_enc[-1]
         kernel_initializer_i = self.kernel_initializer
+        bias_initializer_i = self.bias_initializer
+        kernel_regularizer_i = self.kernel_regularizer
+        bias_regularizer_i = self.bias_regularizer
 
         for j in range(num_conv_layers_i):
             x = Convolution2D(num_filters_i,
@@ -1840,7 +2096,10 @@ class UNet(BaseModel):
                               strides=(1, 1),
                               padding="same",
                               data_format=self.data_format,
-                              kernel_initializer=kernel_initializer_i)(x)
+                              kernel_initializer=kernel_initializer_i,
+                              bias_initializer=bias_initializer_i,
+                              kernel_regularizer=kernel_regularizer_i,
+                              bias_regularizer=bias_regularizer_i)(x)
 
             if self.use_batch_normalization:
                 x = BatchNormalization(axis=self._axis)(x)
@@ -1853,23 +2112,32 @@ class UNet(BaseModel):
         filter_sizes_i = self.filter_sizes[-1]
         activation_function_i = self.activations_dec[0]
         kernel_initializer_i = self.kernel_initializer
+        bias_initializer_i = self.bias_initializer
+        kernel_regularizer_i = self.kernel_regularizer
+        bias_regularizer_i = self.bias_regularizer
 
         for j in range(num_conv_layers_i):
             if self.use_deconvolutions:
                 x = layers.Convolution2DTranspose(
-                                            num_filters_i,
-                                            (filter_sizes_i, filter_sizes_i),
-                                            strides=(1, 1),
-                                            padding="same",
-                                            data_format=self.data_format,
-                                            kernel_initializer=kernel_initializer_i)(x)
+                                  num_filters_i,
+                                  (filter_sizes_i, filter_sizes_i),
+                                  strides=(1, 1),
+                                  padding="same",
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
             else:
                 x = Convolution2D(num_filters_i,
                                   (filter_sizes_i, filter_sizes_i),
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format,
-                                  kernel_initializer=kernel_initializer_i)(x)
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
 
             x = activation_function_i(x)
 
@@ -1880,6 +2148,9 @@ class UNet(BaseModel):
             filter_sizes_i = self.filter_sizes[-i]
             activation_function_i = self.activations_dec[i - 1]
             kernel_initializer_i = self.kernel_initializer
+            bias_initializer_i = self.bias_initializer
+            kernel_regularizer_i = self.kernel_regularizer
+            bias_regularizer_i = self.bias_regularizer
 
             if self.use_upconvolution:
                 x = layers.Resampling2D((2, 2),
@@ -1891,41 +2162,55 @@ class UNet(BaseModel):
                                   strides=(1, 1),
                                   padding="same",
                                   data_format=self.data_format,
-                                  kernel_initializer=kernel_initializer_i)(x)
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
+
             elif self.use_strided_deconvolution:
                 # Strided deconvolution for upsampling
                 x = layers.Convolution2DTranspose(
-                                            num_filters_i,
-                                            (filter_sizes_i, filter_sizes_i),
-                                            strides=(2, 2),  # Upsampling
-                                            padding="same",
-                                            data_format=self.data_format,
-                                            kernel_initializer=kernel_initializer_i)(x)
+                                  num_filters_i,
+                                  (filter_sizes_i, filter_sizes_i),
+                                  strides=(2, 2),  # Upsampling
+                                  padding="same",
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
+
             elif self.use_maxunpooling:
                 # Max unpooling
-                if self.use_maxunpooling_mask:
-                    mask = maxpooling_layers[-(i - 1)].mask
+                if self.use_maxpooling and self.use_maxunpooling_mask:
+                    # mask = maxpooling_layers[-(i - 1)].mask
+                    mask = maxpooling_masks[-(i - 1)]
 
                     # Adjust the number of channels, if necessary
                     if self.num_filters[-i] != self.num_filters[-(i - 1)]:
-                        x = Convolution2D(self.num_filters[-i],
-                                          (1, 1),
-                                          strides=(1, 1),
-                                          padding="same",
-                                          data_format=self.data_format,
-                                          kernel_initializer=kernel_initializer_i)(x)
-                else:
-                    mask = None
+                        x = Convolution2D(
+                                  self.num_filters[-i],
+                                  (1, 1),
+                                  strides=(1, 1),
+                                  padding="same",
+                                  data_format=self.data_format,
+                                  kernel_initializer=kernel_initializer_i,
+                                  bias_initializer=bias_initializer_i,
+                                  kernel_regularizer=kernel_regularizer_i,
+                                  bias_regularizer=bias_regularizer_i)(x)
 
-                unpool_name = "maxunpool_%d" % (len(self.num_conv_layers) - i,)
-                unpool_name = unpool_name + "_" + str(K.get_uid(unpool_name))
+                    x = [x, mask]
+
+                # unpool_name = "maxunpool_%d" % (len(self.num_conv_layers) - i,)
+                # unpool_name = unpool_name + "_" + str(K.get_uid(unpool_name))
                 x = layers.MaxUnpooling2D(pool_size=(2, 2),
                                           strides=(2, 2),  # Not used
                                           padding="same",  # Not used
                                           data_format="channels_last",
-                                          mask=mask,
-                                          fill_zeros=True,
-                                          name=unpool_name)(x)
+                                          # mask=mask,
+                                          fill_zeros=True  # ,
+                                          # name=unpool_name
+                                          )(x)
             else:  # Should not be able to happen!
                 raise RuntimeError("No upsampling method selected.")
 
@@ -1936,19 +2221,26 @@ class UNet(BaseModel):
             for j in range(num_conv_layers_i):
                 if self.use_deconvolutions:
                     x = layers.Convolution2DTranspose(
-                                            num_filters_i,
-                                            (filter_sizes_i, filter_sizes_i),
-                                            strides=(1, 1),
-                                            padding="same",
-                                            data_format=self.data_format,
-                                            kernel_initializer=kernel_initializer_i)(x)
+                                    num_filters_i,
+                                    (filter_sizes_i, filter_sizes_i),
+                                    strides=(1, 1),
+                                    padding="same",
+                                    data_format=self.data_format,
+                                    kernel_initializer=kernel_initializer_i,
+                                    bias_initializer=bias_initializer_i,
+                                    kernel_regularizer=kernel_regularizer_i,
+                                    bias_regularizer=bias_regularizer_i)(x)
                 else:
-                    x = Convolution2D(num_filters_i,
-                                      (filter_sizes_i, filter_sizes_i),
-                                      strides=(1, 1),
-                                      padding="same",
-                                      data_format=self.data_format,
-                                      kernel_initializer=kernel_initializer_i)(x)
+                    x = Convolution2D(
+                                    num_filters_i,
+                                    (filter_sizes_i, filter_sizes_i),
+                                    strides=(1, 1),
+                                    padding="same",
+                                    data_format=self.data_format,
+                                    kernel_initializer=kernel_initializer_i,
+                                    bias_initializer=bias_initializer_i,
+                                    kernel_regularizer=kernel_regularizer_i,
+                                    bias_regularizer=bias_regularizer_i)(x)
 
                 x = activation_function_i(x)
 
@@ -1958,14 +2250,589 @@ class UNet(BaseModel):
                           strides=(1, 1),
                           padding="same",
                           data_format=self.data_format,
-                          kernel_initializer=kernel_initializer_i)(x)
+                          kernel_initializer=kernel_initializer_i,
+                          bias_initializer=bias_initializer_i,
+                          kernel_regularizer=kernel_regularizer_i,
+                          bias_regularizer=bias_regularizer_i)(x)
 
-        outputs = x
+        if len(self.dense_sizes) > 0:
+
+            x = Flatten()(x)
+
+            # Dense layers
+            for i in range(len(self.dense_sizes) - 1):
+
+                dense_size_i = self.dense_sizes[i]
+                activation_function_i = self.dense_activations[i]
+
+                x = Dense(dense_size_i)(x)
+                x = activation_function_i(x)
+
+                # Dense layers except the last one subject to dropout
+                if self.dense_dropout > 0.0:
+                    x = Dropout(self.dense_dropout)(x)
+
+            # Final dense layer
+            dense_size_i = self.dense_sizes[-1]
+            activation_function_i = self.dense_activations[-1]
+
+            x = Dense(dense_size_i)(x)
+            x = activation_function_i(x)
+
+        if self.output_activation is not None:
+            outputs = self.output_activation(x)
+        else:
+            outputs = x
 
 #        # Ensure that the model takes into account
 #        # any potential predecessors of `input_tensor`.
 #        if self.input_tensor is not None:
 #            inputs = get_source_inputs(self.input_tensor)
+
+        # Create model
+        model = Model(inputs, outputs, name=self.name)
+
+        return model
+
+
+class DenseNet(BaseModel):
+    """Generates the DenseNet architechture of Huang et al. (2015) [1]_.
+
+    Adapted from the Caffe implementation at:
+
+        https://github.com/liuzhuang13/DenseNet
+
+    Parameters
+    ----------
+    input_shape : tuple of ints, length 3
+        The shape of the input data, excluding the batch dimension.
+
+    num_blocks : int, optional
+        The number of dense blocks. Default is ``4``.
+
+    growth_rate : int, optional
+        The growth rate of the network. Default is ``32``.
+
+    init_num_filters : int, optional
+        The number of filters in the initial convolution. Default is ``64``, or
+        twice the growth rate.
+
+    init_filter_size : int, optional
+        The filter size of the initial convolution. Default is ``7``.
+
+    init_stride : int, optional
+        The stride of the initial convolution. Default is ``2``.
+
+    init_kernel_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for the kernel in the initial convolution.
+        Default is ``"glorot_uniform"``.
+
+    init_bias_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for the bias in the initial convolution. Default
+        is ``"zeros"``, which means to initialise all biases to zero.
+
+    init_batch_normalization : bool, optional
+        Whether or not to use batch normalization after the first convolution.
+        Default is ``True``.
+
+    init_activation : str or Activation, optional
+        The activation to use after the initial convolution. Default is
+        ``"relu"``.
+
+    init_pool_size : int, optional
+        The pool size for the initial pooling. Default is ``3``.
+
+    init_pool_stride : int, optional
+        The pool stride for the initial pooling. Default is ``2``.
+
+    dense_batch_normalization : bool, optional
+        Whether or not to use batch normalization in the dense blocks. Default
+        is ``True``.
+
+    dense_activation : str or Activation, optional
+        The activation to use in the dense blocks. Default is ``"relu"``.
+
+    dense_bottleneck : bool, optional
+        Whether or not to use a bottleneck block in the dense blocks. Default
+        is ``True``.
+
+    dense_bottleneck_dropout_rate : float, optional
+        The rate at which weights are dropped in the bottleneck blocks. If both
+        ``dense_bottleneck_dropout_rate`` and
+        ``dense_bottleneck_spatialdropout_rate`` are non-zero, only
+        ``dense_bottleneck_spatialdropout_rate`` will be used. Default is 0.0,
+        which means that no dropout is used.
+
+    dense_bottleneck_spatialdropout_rate : float, optional
+        The rate at which filters are dropped in the bottleneck blocks. If both
+        ``dense_bottleneck_dropout_rate`` and
+        ``dense_bottleneck_spatialdropout_rate`` are non-zero, only
+        ``dense_bottleneck_spatialdropout_rate`` will be used. Default is 0.0,
+        which means that spatial dropout is not used.
+
+    dense_filter_size : int, optional
+        The filter size of dense block convolutions. Default is ``3``.
+
+    dense_kernel_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for the kernels in the dense block convolutions.
+        Default is ``"glorot_uniform"``.
+
+    dense_bias_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for the biases in the dense block convolutions.
+        Default is ``"zeros"``, which means to initialise all biases to zero.
+
+    dense_dropout_rate : float, optional
+        The rate at which weights are dropped. If both ``dense_dropout_rate``
+        and ``dense_spatialdropout_rate`` are non-zero, only
+        ``dense_spatialdropout_rate`` will be used. Default is 0.0, which means
+        that no dropout is used.
+
+    dense_spatialdropout_rate : float, optional
+        The rate at which filters are dropped. If both ``dense_dropout_rate``
+        and ``dense_spatialdropout_rate`` are non-zero, only
+        ``dense_spatialdropout_rate`` will be used. Default is 0.0, which means
+        that spatial dropout is not used.
+
+    transition_batch_normalization : bool, optional
+        Whether or not to use batch normalization in the transition blocks.
+        Default is ``True``.
+
+    transition_activation : str or Activation, optional
+        The activation to use in the transition blocks. Default is ``"relu"``.
+
+    transition_dropout_rate : float, optional
+        The rate at which weights are dropped. If both
+        ``transition_dropout_rate`` and ``transition_spatialdropout_rate`` are
+        non-zero, only ``transition_spatialdropout_rate`` will be used. Default
+        is 0.0, which means that no dropout is used.
+
+    transition_spatialdropout_rate : float, optional
+        The rate at which filters are dropped. If both
+        ``transition_dropout_rate`` and ``transition_spatialdropout_rate`` are
+        non-zero, only ``transition_spatialdropout_rate`` will be used. Default
+        is 0.0, which means that spatial dropout is not used.
+
+    transition_compression : float, optional
+        The compression to use in the transition blocks. Default is ``0.5``.
+
+    transition_pool_size : int, optional
+        The pooling size for the transition block pooling. Default is ``2``.
+
+    transition_pool_stride : int, optional
+        The pooling stride for the transition block pooling. Default is ``2``.
+
+    final_batch_normalization : bool, optional
+        Whether or not to use batch normalization in the final block. Default
+        is ``True``.
+
+    final_activation : str or Activation, optional
+        The activation to use in the final block. Default is ``"relu"``.
+
+    final_global_pooling : bool, optional
+        Whether or not to use global average pooling in the final block.
+        Depending on the other parameters, the final layer may not fit a 7x7
+        average pooling (as in the original paper [1]_), in which case global
+        average pooling is really the sought behaviour. Otherwise, when
+        ``final_global_pooling=False`` an average pooling will be used instead
+        with size ``final_pool_size`` and stride ``final_pool_stride``. Default
+        is ``False``.
+
+    final_pool_size : bool, optional
+        When ``final_global_pooling=False``, a regular average pooling layer
+        with size ``final_pool_size`` will be used instead. Default is ``7``.
+
+    final_pool_stride : bool, optional
+        When ``final_global_pooling=False``, a regular average pooling layer
+        with stride ``final_pool_stride`` will be used instead. Default is
+        ``7``.
+
+    final_dense_layer : bool, optional
+        Whether or not to include a final dense (fully connected) layer.
+        Default is False, do not include a dense layer.
+
+    final_dense_dim : int, optional
+        The output dimension of a final dense layer. Default is ``1``.
+
+    final_dense_dropout_rate : float, optional
+         The rate at which dense weights are dropped. Only used if
+         ``final_dense_layer=True``. Default is 0.0, which means that no
+         dropout is used.
+
+    final_dense_activation : str or Activation, optional
+        The activation to use for the final dense layer. Default is ``"relu"``.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually ``"/device:GPU:0"``). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is ``"ConvolutionalNetwork"``.
+
+    References
+    ----------
+    .. [1] G. Huang, Z. Liu, L. van der Maaten, and K. Q. Weinberger (2017).
+       "Densely connected convolutional networks". Proceedings of the IEEE
+       Conference on Computer Vision and Pattern Recognition.
+
+    Examples
+    --------
+    >>> import nethin
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.set_random_seed(42)
+    >>>
+    >>> input_shape = (128, 128, 1)
+    >>> num_filters = (16, 16)
+    >>> filter_sizes = (3, 3)
+    >>> subsample = (True, True)
+    >>> activations = ("relu", "relu")
+    >>> dense_sizes = (1,)
+    >>> dense_activations = "sigmoid"
+    >>> use_batch_normalization = True
+    >>> use_dropout = True
+    >>> dropout_rate = 0.5
+    >>> use_maxpool = True
+    >>> data_format = "channels_last"
+    >>> device = "/device:CPU:0"
+    >>>
+    >>> X = np.random.randn(*input_shape)
+    >>> X = X[np.newaxis, ...]
+    >>>
+    >>> model = nethin.models.ConvolutionalNetwork(input_shape=input_shape,
+    ...                                            num_filters=num_filters,
+    ...                                            filter_sizes=filter_sizes,
+    ...                                            subsample=subsample,
+    ...                                            activations=activations,
+    ...                                            dense_sizes=dense_sizes,
+    ...                                            dense_activations=dense_activations,
+    ...                                            use_batch_normalization=use_batch_normalization,
+    ...                                            use_dropout=use_dropout,
+    ...                                            dropout_rate=dropout_rate,
+    ...                                            use_maxpool=use_maxpool,
+    ...                                            data_format=data_format,
+    ...                                            device=device)
+    >>> model.input_shape
+    (128, 128, 1)
+    >>> X.shape
+    (1, 128, 128, 1)
+    >>> model.compile(optimizer="Adam", loss="mse")
+    >>> Y = model.predict_on_batch(X)
+    >>> Y.shape
+    (1, 1)
+    >>> np.abs(np.sum(Y - X) - 9986) < 1.0
+    True
+    """
+    def __init__(self,
+                 input_shape,
+                 num_blocks=4,
+                 num_layers=[6, 12, 24, 16],
+                 growth_rate=32,
+                 init_num_filters=64,
+                 init_filter_size=7,
+                 init_stride=2,
+                 init_kernel_initializer="glorot_uniform",
+                 init_bias_initializer="zeros",
+                 init_batch_normalization=True,
+                 init_activation="relu",
+                 init_pool_size=3,
+                 init_pool_stride=2,
+                 dense_batch_normalization=True,
+                 dense_activation="relu",
+                 dense_bottleneck=True,
+                 dense_bottleneck_dropout_rate=0.0,
+                 dense_bottleneck_spatialdropout_rate=0.0,
+                 dense_filter_size=3,
+                 dense_kernel_initializer="glorot_uniform",
+                 dense_bias_initializer="zeros",
+                 dense_dropout_rate=0.0,
+                 dense_spatialdropout_rate=0.0,
+                 transition_batch_normalization=True,
+                 transition_activation="relu",
+                 transition_spatialdropout_rate=0.0,
+                 transition_dropout_rate=0.0,
+                 transition_compression=0.5,
+                 transition_pool_size=2,
+                 transition_pool_stride=2,
+                 final_batch_normalization=True,
+                 final_activation="relu",
+                 final_global_pooling=True,
+                 final_pool_size=7,
+                 final_pool_stride=7,
+                 final_dense_layer=True,
+                 final_dense_dim=2,
+                 final_dense_dropout_rate=0.0,
+                 output_activation="softmax",
+                 data_format=None,
+                 device=None,
+                 name="DenseNet"):
+
+        super(DenseNet, self).__init__("nethin.models.DenseNet",
+                                       data_format=data_format,
+                                       device=device,
+                                       name=name)
+
+        self.input_shape = tuple([int(s) for s in input_shape])
+        self.num_blocks = max(0, int(num_blocks))
+
+        if isinstance(num_layers, (list, tuple)):
+            num_layers = [max(1, int(n)) for n in num_layers]
+        else:
+            num_layers = [max(1, int(num_layers))] * self.num_blocks
+        assert(len(num_layers) == self.num_blocks)
+        self.num_layers = num_layers
+
+        self.growth_rate = max(1, int(growth_rate))
+
+        self.init_num_filters = max(0, int(init_num_filters))  # Zero to skip
+        self.init_filter_size = max(1, int(init_filter_size))
+        self.init_stride = max(1, int(init_stride))
+        self.init_kernel_initializer \
+            = keras.initializers.get(init_kernel_initializer)
+        self.init_bias_initializer \
+            = keras.initializers.get(init_bias_initializer)
+        self.init_batch_normalization = bool(init_batch_normalization)
+
+        self._init_activation_orig = init_activation
+        self.init_activation = utils.deserialize_activations(
+                                                            init_activation,
+                                                            device=self.device)
+
+        self.init_pool_size = max(1, int(init_pool_size))
+        self.init_pool_stride = max(1, int(init_pool_stride))
+
+        self.dense_batch_normalization = bool(dense_batch_normalization)
+
+        self._init_dense_activation = dense_activation
+        self.dense_activation = utils.deserialize_activations(
+                                                            dense_activation,
+                                                            device=self.device)
+
+        self.dense_bottleneck = bool(dense_bottleneck)
+        self.dense_bottleneck_dropout_rate \
+            = max(0.0, min(float(dense_bottleneck_dropout_rate), 1.0))
+        self.dense_bottleneck_spatialdropout_rate \
+            = max(0.0, min(float(dense_bottleneck_spatialdropout_rate), 1.0))
+
+        self.dense_filter_size = max(1, int(dense_filter_size))
+        self.dense_kernel_initializer \
+            = keras.initializers.get(dense_kernel_initializer)
+        self.dense_bias_initializer \
+            = keras.initializers.get(dense_bias_initializer)
+        self.dense_dropout_rate = max(0.0,
+                                      min(float(dense_spatialdropout_rate),
+                                          1.0))
+        self.dense_spatialdropout_rate \
+            = max(0.0, min(float(dense_spatialdropout_rate), 1.0))
+
+        self.transition_batch_normalization \
+            = bool(transition_batch_normalization)
+
+        self._init_transition_activation = transition_activation
+        self.transition_activation = utils.deserialize_activations(
+                                                        transition_activation,
+                                                        device=self.device)
+
+        self.transition_spatialdropout_rate \
+            = max(0.0, min(float(transition_spatialdropout_rate), 1.0))
+        self.transition_dropout_rate = max(0.0,
+                                           min(float(transition_dropout_rate),
+                                               1.0))
+
+        self.transition_compression = max(0.0,
+                                          min(float(transition_compression),
+                                              1.0))
+        self.transition_pool_size = max(1, int(transition_pool_size))
+        self.transition_pool_stride = max(1, int(transition_pool_stride))
+
+        self.final_batch_normalization = bool(final_batch_normalization)
+
+        self._init_final_activation = final_activation
+        self.final_activation = utils.deserialize_activations(
+                                                            final_activation,
+                                                            device=self.device)
+        self.final_global_pooling = bool(final_global_pooling)
+        self.final_pool_size = max(1, int(final_pool_size))
+        self.final_pool_stride = max(1, int(final_pool_stride))
+
+        self.final_dense_layer = bool(final_dense_layer)
+        self.final_dense_dim = max(1, int(final_dense_dim))
+        self.final_dense_dropout_rate = max(0.0,
+                                           min(float(final_dense_dropout_rate),
+                                               1.0))
+
+        self._init_output_activation = output_activation
+        self.output_activation = utils.deserialize_activations(
+                                                            output_activation,
+                                                            device=self.device)
+
+        if self.data_format == "channels_last":
+            self._axis = 3
+        else:  # data_format == "channels_first":
+            self._axis = 1
+
+        self.model = self._with_device(self._generate_model)
+
+    def _dense_block(self, x, i, filter_count):
+
+        for l in range(self.num_layers[i]):
+
+            dense_link = x
+
+            if self.dense_batch_normalization:
+                x = BatchNormalization(axis=self._axis)(x)
+
+            if self.dense_activation is not None:
+                x = self.dense_activation(x)
+
+            if self.dense_bottleneck:
+
+                # TODO: Make # filters, BN and activation parameters.
+
+                x = Convolution2D(self.growth_rate * 4,
+                                  (1, 1),
+                                  padding="same",
+                                  data_format=self.data_format,
+                                  kernel_initializer="he_normal",
+                                  use_bias=False)(x)
+
+                if self.dense_bottleneck_spatialdropout_rate > 0.0:
+                    x = SpatialDropout2D(
+                            self.dense_bottleneck_spatialdropout_rate,
+                            data_format=self.data_format)(x)
+                elif self.dense_bottleneck_dropout_rate > 0.0:
+                    x = Dropout(self.dense_bottleneck_dropout_rate)(x)
+
+                x = BatchNormalization(axis=self._axis)(x)
+
+                x = Activation("relu")(x)
+
+            x = Convolution2D(
+                    self.growth_rate,
+                    (self.dense_filter_size,
+                     self.dense_filter_size),
+                    padding="same",
+                    data_format=self.data_format,
+                    kernel_initializer=self.dense_kernel_initializer,
+                    bias_initializer=self.dense_bias_initializer)(x)
+
+            if self.dense_spatialdropout_rate > 0.0:
+                x = SpatialDropout2D(self.dense_spatialdropout_rate,
+                                     data_format=self.data_format)(x)
+            elif self.dense_dropout_rate > 0.0:
+                x = Dropout(self.dense_dropout_rate)(x)
+
+            x = Concatenate(axis=self._axis)([dense_link, x])
+            filter_count += self.growth_rate
+
+        return x, filter_count
+
+    def _generate_model(self):
+
+        inputs = Input(shape=self.input_shape)
+        x = inputs
+
+        # Initial convolution
+        if (self.init_num_filters is not None) and (self.init_num_filters > 0):
+            x = Convolution2D(self.init_num_filters,
+                              (self.init_filter_size, self.init_filter_size),
+                              strides=(self.init_stride, self.init_stride),
+                              padding="same",
+                              data_format=self.data_format,
+                              kernel_initializer=self.init_kernel_initializer,
+                              bias_initializer=self.init_bias_initializer)(x)
+            filter_count = self.init_num_filters
+        else:
+            filter_count = 0
+
+        if self.init_batch_normalization:
+            x = BatchNormalization(axis=self._axis)(x)
+
+        if self.init_activation is not None:
+            x = self.init_activation(x)
+
+        if self.init_pool_size is not None:
+            x = MaxPooling2D(pool_size=(self.init_pool_size,
+                                        self.init_pool_size),
+                             strides=(self.init_pool_stride,
+                                      self.init_pool_stride),
+                             padding="same",
+                             data_format=self.data_format)(x)
+
+        # Dense blocks
+        for i in range(self.num_blocks - 1):
+
+            # Dense block
+            x, filter_count = self._dense_block(x, i, filter_count)
+
+            # Transition block
+            if self.transition_batch_normalization:
+                x = BatchNormalization(axis=self._axis)(x)
+
+            if self.transition_activation is not None:
+                x = self.transition_activation(x)
+
+            filter_count = int(filter_count * self.transition_compression)
+            x = Convolution2D(
+                    filter_count,
+                    (1, 1),
+                    padding="same",
+                    data_format=self.data_format,
+                    kernel_initializer="he_normal",
+                    use_bias=False)(x)
+
+            if self.transition_spatialdropout_rate > 0.0:
+                x = SpatialDropout2D(self.transition_spatialdropout_rate,
+                                     data_format=self.data_format)(x)
+            elif self.transition_dropout_rate > 0.0:
+                x = Dropout(self.transition_dropout_rate)(x)
+
+            x = AveragePooling2D((self.transition_pool_size,
+                                  self.transition_pool_size),
+                                 strides=(self.transition_pool_stride,
+                                          self.transition_pool_stride))(x)
+
+        # Final dense block
+        x, filter_count = self._dense_block(x,
+                                            self.num_blocks - 1,
+                                            filter_count)
+
+        if self.final_batch_normalization:
+            x = BatchNormalization(axis=self._axis)(x)
+
+        if self.final_activation is not None:
+            x = self.final_activation(x)
+
+        if self.final_global_pooling:
+            x = GlobalAveragePooling2D()(x)
+        else:
+            x = AveragePooling2D((self.final_pool_size, self.final_pool_size),
+                                 strides=(self.final_pool_stride,
+                                          self.final_pool_stride))(x)
+        x = Flatten()(x)
+
+        # Dense layer
+        if self.final_dense_layer:
+            x = Dense(self.final_dense_dim)(x)
+
+            if self.final_dense_dropout_rate > 0.0:
+                x = Dropout(self.final_dense_dropout_rate)(x)
+
+        # Output activation
+        if self.output_activation is not None:
+            x = self.output_activation(x)
+
+        outputs = x
 
         # Create model
         model = Model(inputs, outputs, name=self.name)

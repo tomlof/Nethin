@@ -935,8 +935,12 @@ class Dicom3DGenerator(BaseGenerator):
     def _read_dicom(self, file_name):
         """Read a single channel slice for a particular image.
         """
-        data = pydicom.read_file(file_name)
-        image = pydicom.pixel_array.astype(float)
+        try:
+            data = pydicom.dcmread(file_name)
+        except (AttributeError):  # dicom, will be deprecated!
+            data = pydicom.read_file(file_name)
+
+        image = data.pixel_array.astype(float)
 
         # Convert to original units
         image = image * data.RescaleSlope + data.RescaleIntercept

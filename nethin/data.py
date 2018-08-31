@@ -20,7 +20,10 @@ import numpy as np
 from six import with_metaclass
 from scipy.misc import imread, imresize
 
-from keras.utils import conv_utils
+try:
+    from keras.utils.conv_utils import normalize_data_format
+except ImportError:
+    from keras.backend.common import normalize_data_format
 
 import nethin
 import nethin.utils as utils
@@ -32,11 +35,11 @@ except (ImportError):
     _HAS_GENERATOR = False
 
 try:
-    import dicom
+    import pydicom
     _HAS_DICOM = True
 except (ImportError):
     try:
-        import pydicom as dicom
+        import dicom as pydicom
         _HAS_DICOM = True
     except (ImportError):
         _HAS_DICOM = False
@@ -44,7 +47,7 @@ except (ImportError):
 __all__ = ["BaseGenerator",
            "ImageGenerator", "ArrayGenerator",
            "Dicom3DGenerator", "DicomGenerator",
-           "Numpy3DGenerator",
+           "Numpy2DGenerator", "Numpy3DGenerator",
            "Dicom3DSaver"]
 
 
@@ -350,8 +353,11 @@ class ImageGenerator(BaseGenerator):
                 top = int(round((image.shape[0] / 2) - (crop0 / 2)) + 0.5)
                 left = int(round((image.shape[1] / 2) - (crop1 / 2)) + 0.5)
             else:
-                top = self.random_state.randint(0, max(1, image.shape[0] - crop0))
-                left = self.random_state.randint(0, max(1, image.shape[1] - crop1))
+                top = self.random_state.randint(0,
+                                                max(1, image.shape[0] - crop0))
+                left = self.random_state.randint(0,
+                                                 max(1,
+                                                     image.shape[1] - crop1))
             image = image[top:top + crop0, left:left + crop1]
 
         if self.flip is not None:
@@ -718,7 +724,7 @@ class Dicom3DGenerator(BaseGenerator):
 
         self.dir_path = str(dir_path)
         self.image_names = [str(name) for name in image_names]
-        
+
         self.channel_names = []
         for channel in channel_names:
             if isinstance(channel, str):
@@ -778,7 +784,7 @@ class Dicom3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.data_format = normalize_data_format(data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__
@@ -853,7 +859,8 @@ class Dicom3DGenerator(BaseGenerator):
         channel_length = None
         for channel_dir_i in range(len(channel_dirs)):  # 0
             channel_dir = channel_dirs[channel_dir_i]  # channel_dir = "CT"
-            channel_path = os.path.join(image_path, channel_dir)  # "~/data/Patient 1/CT"
+            channel_path = os.path.join(image_path,
+                                        channel_dir)  # "~/data/Pat 1/CT"
             dicom_files = os.listdir(channel_path)  # ["im1.dcm", "im2.dcm"]
 
             # Check that channels have the same length
@@ -868,7 +875,8 @@ class Dicom3DGenerator(BaseGenerator):
             # Create full relative or absolute path for all slices
             full_file_names = []
             for file in dicom_files:
-                dicom_file = os.path.join(channel_path, file)  # "~/data/Patient 1/CT/im1.dcm"
+                dicom_file = os.path.join(channel_path,
+                                          file)  # "~/data/Pat 1/CT/im1.dcm"
 
                 full_file_names.append(dicom_file)
 
@@ -894,9 +902,10 @@ class Dicom3DGenerator(BaseGenerator):
                 if self.randomize_order:
                     if indices is None:
                         # Randomize using same random order for all channels
-                        indices = self.random_state.choice(len(files),
-                                                           size=len(files),
-                                                           replace=False).tolist()
+                        indices = self.random_state.choice(
+                                len(files),
+                                size=len(files),
+                                replace=False).tolist()
 
                     new_files = [None] * len(files)
                     for i in range(len(files)):
@@ -926,8 +935,8 @@ class Dicom3DGenerator(BaseGenerator):
     def _read_dicom(self, file_name):
         """Read a single channel slice for a particular image.
         """
-        data = dicom.read_file(file_name)
-        image = data.pixel_array.astype(float)
+        data = pydicom.read_file(file_name)
+        image = pydicom.pixel_array.astype(float)
 
         # Convert to original units
         image = image * data.RescaleSlope + data.RescaleIntercept
@@ -1022,14 +1031,16 @@ class Dicom3DGenerator(BaseGenerator):
             if self.random_pool_size is None:
                 queue_lim = 1
             else:
-                queue_lim = max(1, (self.random_pool_size - 1) * self._average_num_slices)
+                queue_lim = max(
+                        1,
+                        (self.random_pool_size - 1) * self._average_num_slices)
             if self._file_queue_len() < queue_lim:
                 update_done = self._file_queue_update()
 
             file_names = None
             try:
                 file_names = self._file_queue_pop()
-            except (IndexError) as e:
+            except (IndexError):
                 if not update_done:  # Images not added, no images in queue
                     if (self.batch_size is None) \
                             and (not self._throw_stop_iteration):
@@ -1044,7 +1055,8 @@ class Dicom3DGenerator(BaseGenerator):
                     images = self._process_images(images)
                     images = np.array(images)
                     if self.data_format == "channels_last":
-                        images = np.transpose(images, (1, 2, 0))  # Channels last
+                        images = np.transpose(images,
+                                              (1, 2, 0))  # Channels last
                     return_images.append(images)
 
         return return_images
@@ -1254,7 +1266,7 @@ class DicomGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(self.batch_size, int(random_pool_size))
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.data_format = normalize_data_format(data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__
@@ -1359,8 +1371,8 @@ class DicomGenerator(BaseGenerator):
         """Read a single dicom image or return None if not a dicom file.
         """
         try:
-            data = dicom.read_file(file_name)
-        except (dicom.filereader.InvalidDicomError, FileNotFoundError) as e:
+            data = pydicom.read_file(file_name)
+        except (pydicom.filereader.InvalidDicomError, FileNotFoundError):
             return None
 
         image = data.pixel_array.astype(float)
@@ -1434,7 +1446,7 @@ class DicomGenerator(BaseGenerator):
             file_name = None
             try:
                 file_name = self._file_queue_pop()
-            except (IndexError) as e:
+            except (IndexError):
                 if not update_done:  # Images not added, no images in queue
                     self.throw(StopIteration)
 
@@ -1444,6 +1456,269 @@ class DicomGenerator(BaseGenerator):
                     image = self._process_image(image)
 
                     return_images.append(image)
+
+        return return_images
+
+
+class Numpy2DGenerator(BaseGenerator):
+    """A generator over 2D images in a given directory, saved as npz files.
+
+    It will be assume that all npz files in the directory are to be read. The
+    returned data will have shape ``(batch_size, height, width, channels)`` or
+    ``(batch_size, channels, height, width)``, depending on the value of
+    ``data_format``.
+
+    Parameters
+    ----------
+    dir_path : str, or list of str
+        Path to the directory containing the images.
+
+    image_key : str
+        The string name of the key in the loaded ``NpzFile`` that contains the
+        image.
+
+    file_names : list of str or None, optional
+        A list of npz filenames to read or None, which means to read all npz
+        files. Default is None, read all npz files in the given directory.
+
+    batch_size : int or None, optional
+        The number of images to return at each yield. If None, all images will
+        be returned. If there are not enough images to return in one batch, the
+        source directory is considered exhausted, and StopIteration will be
+        thrown. Default is 1, which means to return only one image at the time.
+
+    restart_generation : bool, optional
+        Whether or not to start over from the first file again after the
+        generator has finished. Default is False, do not start over again.
+
+    pool_size : int, optional
+        A pool of buffered images to be kept in memory at all times. It may not
+        be possible to load all of them in memory at once, why a pool is used
+        instead. If ``randomize_order=True``, the pool is randomised as well.
+        The value of ``pool_size`` determines how many files will be read and
+        kept in the pool at the same time. When the number of slices in the
+        pool falls below ``pool_size``, a new image will automatically be
+        loaded into the pool, and if ``randomize_order=True`` the pool will be
+        reshuffled, to improve the mixing. If the ``pool_size`` is small, only
+        a few image will be kept in the pool at any given time, and
+        mini-batches may not be independent, depending on if the images are
+        order-dependent. If possible, the value of ``pool_size`` should be set
+        to the number of files in the given directory. Default is 100, which
+        means to use a pool of 100 images.
+
+    randomize_order : bool, optional
+        Whether or not to randomise the order of the images as they are read.
+        The order will be completely random if ``pool_size`` is the same size
+        as the number of npz files in the given directory. Otherwise, only
+        ``pool_size`` npz files will be loaded at any given time and only
+        randomized within the loaded set of files. Use ``pool_size`` in order
+        to control the amount of randomness in the outputs. Default is False,
+        do not randomise the order of the images.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers (for the
+        flip). If int, float or array_like, a new random state is created with
+        the provided value as seed. If None, the default numpy random state
+        (np.random) is used. Default is None, use the default numpy random
+        state.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from nethin.data import DicomGenerator
+    """
+    def __init__(self,
+                 dir_path,
+                 image_key,
+                 file_names=None,
+                 batch_size=1,
+                 restart_generation=False,
+                 pool_size=100,
+                 randomize_order=False,
+                 data_format=None,
+                 random_state=None):
+
+        if isinstance(dir_path, six.string_types):
+            dir_path = [dir_path]
+        dir_path = list(dir_path)
+        self.dir_path = [str(d) for d in dir_path]
+        self.image_key = str(image_key)
+
+        if file_names is None:
+            self.file_names = None
+        elif isinstance(file_names, six.string_types):
+            self.file_names = [str(file_names)]
+        else:
+            self.file_names = [str(file_name) for file_name in file_names]
+
+        if batch_size is None:
+            self.batch_size = batch_size
+        else:
+            self.batch_size = max(1, int(batch_size))
+
+        self.restart_generation = bool(restart_generation)
+        self.pool_size = max(1, int(pool_size))
+        self.randomize_order = bool(randomize_order)
+        self.data_format = normalize_data_format(data_format)
+        self.random_state = utils.normalize_random_state(
+                random_state, rand_functions=["rand", "randint", "choice"])
+
+        self._all_files = self._list_dir()  # ["~usr/im1.npz", "~usr/im2.npz"]
+        self._file_i = 0
+        self._num_updates = 0
+        self._slice_queue = []
+
+        # Attempt to fill the queue
+        for file_i in range(len(self._all_files)):
+            self._file_i = file_i
+
+            if self._slice_queue_update(self._all_files[file_i]):
+                if len(self._slice_queue) > 0:
+                    break  # There are valid files with slices
+        if len(self._slice_queue) == 0:
+            raise ValueError("The given directory does not contain any valid "
+                             "npz files.")
+
+        self._throw_stop_iteration = False
+
+    def _list_dir(self):
+        all_images = []
+        for dir_ in self.dir_path:
+            all_files = os.listdir(dir_)
+            for file in all_files:
+                if file.endswith(".npz"):
+                    full_file = os.path.join(dir_, file)
+                    if os.path.isfile(full_file):
+                        if self.file_names is None:
+                            all_images.append(full_file)
+                        elif file in self.file_names:
+                            all_images.append(full_file)
+
+        return all_images
+
+    def _read_file(self, file):
+
+        image = np.load(file)
+
+        return image[self.image_key]
+
+    def _slice_queue_update(self, file):
+
+        try:
+            # full_file = os.path.join(self.dir_path, file)
+            # image = self._read_file(full_file)
+            image = self._read_file(file)
+        except (KeyError):
+            raise ValueError('Key "%s" does not exist in image file "%s".'
+                             % (self.image_key, file))
+        except (Exception):  # TODO: Specify other possible exceptions?
+            return False
+
+        self._slice_queue_push(image)
+
+        if self.randomize_order:
+            self._slice_queue_shuffle()
+
+        return True
+
+    def _slice_queue_push(self, value):
+
+        self._slice_queue.append(value)
+
+    def _slice_queue_pop(self):
+
+        return self._slice_queue.pop(0)
+
+    def _slice_queue_shuffle(self):
+
+        indices = self.random_state.choice(len(self._slice_queue),
+                                           size=len(self._slice_queue),
+                                           replace=False).tolist()
+
+        new_queue = [None] * len(self._slice_queue)
+        for i in range(len(self._slice_queue)):
+            new_queue[i] = self._slice_queue[indices[i]]
+        self._slice_queue = new_queue
+
+    def throw(self, typ, **kwargs):
+        """Raise an exception in the generator.
+        """
+        super(Numpy2DGenerator, self).throw(typ, **kwargs)
+
+    def send(self, value):
+        """Send a value into the generator.
+
+        Return next yielded value or raise StopIteration.
+        """
+        if self._throw_stop_iteration:
+            if self.restart_generation:
+                self._throw_stop_iteration = False  # Should not happen
+            else:
+                if (self.batch_size is None) \
+                        or (len(self._slice_queue) < self.batch_size):
+                    self.throw(StopIteration)
+                else:
+                    pass  # We are not ready to stop just yet
+
+        return_images = []
+        while (self.batch_size is None) \
+                or (len(return_images) < self.batch_size):
+
+            while not self._throw_stop_iteration:
+                # If we have enough slices, don't update
+                if len(self._slice_queue) >= self.pool_size:
+                    break
+
+                self._file_i += 1
+                if (self.batch_size is None) and self.restart_generation:
+
+                    if self._file_i >= len(self._all_files):
+                        self._file_i = 0  # Restart next time
+                        break  # Do not read any more files now
+
+                elif (self.batch_size is None) \
+                        and (not self.restart_generation):
+
+                    if self._file_i >= len(self._all_files):
+                        # Don't restart next time
+                        self._throw_stop_iteration = True
+                        break  # Do not read any more files now
+
+                elif (self.batch_size is not None) and self.restart_generation:
+
+                    if self._file_i >= len(self._all_files):
+                        self._file_i = 0  # Restart from first file
+
+                else:  # (self.batch_size is not None) \
+                    #        and (not self.restart_generation):
+
+                    if self._file_i >= len(self._all_files):
+                        # Don't restart next time
+                        self._throw_stop_iteration = True
+                        break  # Do not read any more files now
+
+                self._slice_queue_update(self._all_files[self._file_i])
+
+            try:
+                image = self._slice_queue_pop()
+                return_images.append(image)
+            except (IndexError):  # Empty queue
+                if (self.batch_size is None):
+                    break  # Done, return images
+                elif (not self.restart_generation):
+                    # We did not end on a full batch
+                    if len(return_images) != self.batch_size:
+                        self._throw_stop_iteration = True
+                        self.throw(StopIteration)
 
         return return_images
 
@@ -1564,11 +1839,9 @@ class Numpy3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
-        self.random_state = utils.normalize_random_state(random_state,
-                                                         rand_functions=["rand",
-                                                                         "randint",
-                                                                         "choice"])
+        self.data_format = normalize_data_format(data_format)
+        self.random_state = utils.normalize_random_state(
+                random_state, rand_functions=["rand", "randint", "choice"])
 
         self._all_files = self._list_dir()  # ["~usr/im1.npz", "~usr/im2.npz"]
         self._file_i = 0
@@ -1616,10 +1889,10 @@ class Numpy3DGenerator(BaseGenerator):
             # full_file = os.path.join(self.dir_path, file)
             # image = self._read_file(full_file)
             image = self._read_file(file)
-        except (KeyError) as e:
+        except (KeyError):
             raise ValueError('Key "%s" does not exist in image file "%s".'
                              % (self.image_key, file))
-        except:
+        except (Exception):  # TODO: Specify other possible exceptions?
             return False
 
         num_slices = image.shape[0]
@@ -1698,19 +1971,22 @@ class Numpy3DGenerator(BaseGenerator):
                         self._file_i = 0  # Restart next time
                         break  # Do not read any more files now
 
-                elif (self.batch_size is None) and (not self.restart_generation):
+                elif (self.batch_size is None) \
+                        and (not self.restart_generation):
 
                     if self._file_i >= len(self._all_files):
                         # Don't restart next time
                         self._throw_stop_iteration = True
                         break  # Do not read any more files now
 
-                elif (self.batch_size is not None) and self.restart_generation:
+                elif (self.batch_size is not None) \
+                        and self.restart_generation:
 
                     if self._file_i >= len(self._all_files):
                         self._file_i = 0  # Restart from first file
 
-                else:  # (self.batch_size is not None) and (not self.restart_generation):
+                else:  # (self.batch_size is not None) \
+                    #        and (not self.restart_generation):
 
                     if self._file_i >= len(self._all_files):
                         # Don't restart next time
@@ -1722,7 +1998,7 @@ class Numpy3DGenerator(BaseGenerator):
             try:
                 image = self._slice_queue_pop()
                 return_images.append(image)
-            except (IndexError) as e:  # Empty queue
+            except (IndexError):  # Empty queue
                 if (self.batch_size is None):
                     break  # Done, return images
                 elif (not self.restart_generation):
@@ -1768,7 +2044,7 @@ class Dicom3DSaver(object):
         if not isinstance(tags, dict):
             raise ValueError('The "tags" must be a dict.')
         for tag in tags.keys():
-            if not isinstance(tag, dicom.tag.Tag):
+            if not isinstance(tag, pydicom.tag.Tag):
                 raise ValueError('The keys of "tags" must be of type '
                                  '"Tag".')
 
@@ -1806,7 +2082,7 @@ class Dicom3DSaver(object):
 
                 filename = os.path.join(image_dir, slice_name % (slice_i,))
 
-                file_meta = dicom.dataset.Dataset()
+                file_meta = pydicom.dataset.Dataset()
                 file_meta.MediaStorageSOPClassUID = "CT Image Storage"
                 file_meta.MediaStorageSOPInstanceUID = "1.%d.%d.%d" \
                                                        % (channel_id,
@@ -1816,9 +2092,9 @@ class Dicom3DSaver(object):
                 file_meta.ImplementationClassUID = "2.3.7.6.1.2.%s" \
                                                    % (nethin.__version__,)
 
-                data = dicom.dataset.FileDataset(filename, {},
-                                                 file_meta=file_meta,
-                                                 preamble=b"\0" * 128)
+                data = pydicom.dataset.FileDataset(filename, {},
+                                                   file_meta=file_meta,
+                                                   preamble=b"\0" * 128)
                 data.PatientName = patient_name
                 data.PatientID = image_name
 
@@ -1827,7 +2103,8 @@ class Dicom3DSaver(object):
 
                 dt = datetime.datetime.now()
                 data.ContentDate = dt.strftime('%Y%m%d')
-                data.ContentTime = dt.strftime('%H%M%S.%f')  # Long format with micro seconds
+                # Long format with micro seconds:
+                data.ContentTime = dt.strftime('%H%M%S.%f')
 
                 data.InstanceNumber = slice_i
                 data.RescaleIntercept = intercept

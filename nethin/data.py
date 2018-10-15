@@ -15,6 +15,10 @@ import re
 import abc
 import six
 import datetime
+import bisect
+import warnings
+import sqlite3
+import struct
 
 import numpy as np
 from six import with_metaclass
@@ -44,11 +48,618 @@ except (ImportError):
     except (ImportError):
         _HAS_DICOM = False
 
+try:
+    import pandas as pd
+    _HAS_PANDAS = True
+except (ImportError):
+    _HAS_PANDAS = False
+
+
 __all__ = ["BaseGenerator",
            "ImageGenerator", "ArrayGenerator",
            "Dicom3DGenerator", "DicomGenerator",
            "Numpy2DGenerator", "Numpy3DGenerator",
            "Dicom3DSaver"]
+
+
+try:
+    from torch.utils.data import Dataset
+    from torch.utils.data import ConcatDataset
+    _HAS_PYTORCH = True
+
+except (ImportError):
+    _HAS_PYTORCH = False
+
+    class Dataset(object):
+        """This abstract class is a copy of torch.utils.data.Dataset, used as
+        the base class for all datasets. PyTorch pydoc follows:
+
+        An abstract class representing a Dataset.
+
+        All other datasets should subclass it. All subclasses should override
+        ``__len__``, that provides the size of the dataset, and
+        ``__getitem__``, supporting integer indexing in range from 0 to
+        len(self) exclusive.
+        """
+        def __getitem__(self, index):
+            raise NotImplementedError
+
+        def __len__(self):
+            raise NotImplementedError
+
+        def __add__(self, other):
+            return ConcatDataset([self, other])
+
+    class ConcatDataset(Dataset):
+        """This abstract class is a copy of torch.utils.data.ConcatDataset,
+        used as the base class for all datasets. PyTorch pydoc follows:
+
+        Dataset to concatenate multiple datasets.
+
+        Purpose: useful to assemble different existing datasets, possibly
+        large-scale datasets as the concatenation operation is done in an
+        on-the-fly manner.
+
+        Arguments:
+            datasets (sequence): List of datasets to be concatenated
+        """
+        @staticmethod
+        def cumsum(sequence):
+            r, s = [], 0
+            for e in sequence:
+                l_ = len(e)
+                r.append(l_ + s)
+                s += l_
+            return r
+
+        def __init__(self, datasets):
+            super(ConcatDataset, self).__init__()
+            assert len(datasets) > 0, "datasets should not be an empty " + \
+                "iterable"
+            self.datasets = list(datasets)
+            self.cumulative_sizes = self.cumsum(self.datasets)
+
+        def __len__(self):
+            return self.cumulative_sizes[-1]
+
+        def __getitem__(self, idx):
+            dataset_idx = bisect.bisect_right(self.cumulative_sizes, idx)
+            if dataset_idx == 0:
+                sample_idx = idx
+            else:
+                sample_idx = idx - self.cumulative_sizes[dataset_idx - 1]
+            return self.datasets[dataset_idx][sample_idx]
+
+        @property
+        def cummulative_sizes(self):
+            warnings.warn("cummulative_sizes attribute is renamed to "
+                          "cumulative_sizes", DeprecationWarning, stacklevel=2)
+
+            return self.cumulative_sizes
+
+
+class SQLiteDataset(Dataset):
+    """A dataset defined in an SQLite database. The table is assumed to be
+    called "Data", and have the columns:
+
+        ID INTEGER  -- Primary key of row
+        SeriesID TEXT  -- ID of series, where all modalities have the same id
+        Name TEXT  -- Name of tensor
+        Description TEXT  -- Textual description
+        Width INTEGER  -- Tensor width
+        Height INTEGER  -- Tensor height
+        Z INTEGER  -- Slice index
+        T INTEGER  -- Time index
+        C INTEGER  -- Channel index
+        DataType TEXT  -- E.g. "float32"
+        Type TEXT  -- "input" or "output"
+        Class TEXT  -- "scalar" or "tensor"
+        Data BLOB  -- The actual data in little endian byte order
+    """
+    def __init__(self,
+                 sqlite_file,
+                 form="2d",
+                 transform=None,
+                 transform_3d=None):
+        """
+        Parameters
+        ----------
+        sqlite_file : str
+            Path to the SQLite database to read from.
+
+        form : str, optional
+            Whether to read one slice at the time (2d) or one volume image at
+            the time (3d). Default is 2d, one slice at the time is read.
+
+        transform : callable, optional
+            Transform to apply to each slice. Will always be applied to each
+            slice, regardless of the value of ``form``. See ``transform_3d``
+            for more information.
+
+        transform_3d : callable, optional
+            Transform to apply to each volume image. Will only be applied if
+            ``form="3d"``, and if so, it will be applied after ``transform``
+            has been applied to each slice first.
+        """
+        if not _HAS_PANDAS:
+            raise RuntimeError("SQLiteDataset requires the Pandas package to "
+                               "work.")
+
+        self.sqlite_file = str(sqlite_file)
+        if not os.path.exists(self.sqlite_file):
+            raise ValueError('Database file "%s" not found.'
+                             % (self.sqlite_file,))
+
+        form = str(form)
+        if form not in ["2d", "3d"]:
+            raise ValueError('Argument "form" must be one of "2d" or "3d".')
+        self.form = form
+
+        self.transform = transform
+        self.transform_3d = transform_3d
+
+        self._metadata = None
+        self._indices = None
+
+    def _get_column_names(self, remove=None):
+
+        cols = ["ID", "SeriesID", "Name", "Description", "Width", "Height",
+                "Z", "T", "C", "DataType", "Type", "Class", "Data"]
+
+        if remove is not None:
+            if not isinstance(remove, (list, tuple)):
+                remove = [str(remove)]
+
+            remove = [str(r).lower() for r in remove]
+
+            cols_ = []
+            for col in cols:
+                if col.lower() not in remove:
+                    cols_.append(col)
+            cols = cols_
+
+        return cols
+
+    def _select_query(self, query, params=None):
+
+        db_connection = None
+        db_cursor = None
+        try:
+            db_connection = sqlite3.connect(self.sqlite_file,
+                                            check_same_thread=False)
+            db_cursor = db_connection.cursor()
+            if params is None:
+                db_cursor.execute(query)
+            else:
+                db_cursor.execute(query, params)
+            data = db_cursor.fetchall()
+
+            db_cursor.close()
+            db_connection.close()
+
+            return data
+
+        except Exception as e:
+            if db_cursor is not None:
+                db_cursor.close()
+
+            if db_connection is not None:
+                db_connection.close()
+
+            raise e
+
+    def _read_metadata(self):
+
+        db_connection = None
+        try:
+            db_connection = sqlite3.connect(self.sqlite_file,
+                                            check_same_thread=False)
+            cols = self._get_column_names(remove="Data")
+            query = "SELECT " + ", ".join(cols) + " FROM Data;"
+            dt = pd.read_sql_query(query, db_connection)
+            db_connection.close()
+
+            self._metadata = dt
+
+        except Exception as e:
+            if db_connection is not None:
+                db_connection.close()
+
+            raise e
+
+        if self.form == "2d":
+
+            self._read_metadata_2d()
+
+        else:  # form == "3d"
+
+            self._read_metadata_3d()
+
+    def _read_metadata_2d(self):
+
+        sids = self._metadata["SeriesID"].unique().tolist()
+
+        sid = sids[0]
+        metadata_sid = self._metadata[self._metadata["SeriesID"] == sid]
+        names = list(set(metadata_sid["Name"].tolist()))
+
+        slices = dict()
+        slices_nonsingleton = dict()
+        # name = names[0]
+        for name in names:
+            metadata_sid_name = metadata_sid[metadata_sid["Name"] == name]
+            sizes = metadata_sid_name[["Width", "Height", "Z", "T", "C"]]
+
+            # Check time dimension
+            if not all([sz == 1 for sz in sizes["T"]]):
+                raise RuntimeError("Time series data currently not "
+                                   "supported.")
+
+            num_slices = len(list(set(sizes["Z"].tolist())))
+            slices[name] = num_slices
+            if num_slices > 1:
+                slices_nonsingleton[name] = num_slices
+
+        first_value = list(slices_nonsingleton.values())[0]
+        if not all([s == first_value
+                    for s in slices_nonsingleton.values()]):
+            raise RuntimeError("The numbers of slices do not match!")
+
+        self._indices = list()
+        if len(slices_nonsingleton) > 0:
+
+            # Read from first found, assume they have the same number of slices
+            first_name = list(slices_nonsingleton.keys())[0]
+
+            # sid_i = 0
+            for sid_i in range(len(sids)):
+                sid = sids[sid_i]
+
+                metadata_sid = self._metadata[
+                        self._metadata["SeriesID"] == sid]
+                metadata_sid_name = metadata_sid[
+                        metadata_sid["Name"] == first_name]
+
+                # For each slice
+                slices = metadata_sid_name["Z"].tolist()
+                # slice_idx = 0
+                for slice_idx in slices:
+
+                    # List of all channels for this slice
+                    ids = (metadata_sid_name[
+                            metadata_sid_name["Z"] == slice_idx])["ID"]
+
+                    # Add the first channel, if there are several
+                    self._indices.append(ids.min())
+        else:
+            # sid_i = 0
+            for sid_i in range(len(sids)):
+                sid = sids[sid_i]
+
+                ids = (self._metadata[self._metadata["SeriesID"] == sid])["ID"]
+                self._indices.append(ids.min())
+
+    def _read_metadata_3d(self):
+
+        sids = self._metadata["SeriesID"].unique().tolist()
+
+        self._indices = [None] * len(sids)
+        # sid_i = 0
+        for sid_i in range(len(sids)):
+            sid = sids[sid_i]
+            ids = (self._metadata[self._metadata["SeriesID"] == sid])["ID"]
+            self._indices[sid_i] = ids.min()
+
+    def _getitem_2d(self, idx):
+
+        # Get the "idx"th patient
+        id_ = self._indices[idx]
+
+        row = self._metadata[self._metadata["ID"] == id_]
+
+        # Get SeriesID
+        sid = str(row["SeriesID"].tolist()[0])
+
+        # Get slice index
+        Z = int(row["Z"].tolist()[0])
+
+        # All rows belonging to a particular SeriesID
+        metadata_sid = self._metadata[self._metadata["SeriesID"] == sid]
+        names = list(set(metadata_sid["Name"].tolist()))
+
+        # Column names
+        cols = self._get_column_names()
+
+        # The return data
+        item = dict()
+
+        # name = names[0]
+        for name in names:
+            # Each channel (name)
+            metadata_sid_name = metadata_sid[metadata_sid["Name"] == name]
+            # sizes = metadata_sid_name[["Width", "Height", "Z", "T", "C"]]
+
+            # Get a particular slice (list of all channels for a slice)
+            metadata_sid_name_Z = metadata_sid_name[
+                    metadata_sid_name["Z"] == Z]
+            channel_ids = [int(v)
+                           for v in metadata_sid_name_Z["ID"].tolist()]
+
+            tensor = None
+
+            # channel_id_i = 0
+            for channel_id_i in range(len(channel_ids)):
+                channel_id = channel_ids[channel_id_i]
+
+                data = self._select_query(
+                        "SELECT " + ", ".join(cols) + " FROM Data "
+                        "WHERE ID = ?;", (channel_id,))
+                if len(data) != 1:
+                    raise RuntimeError("The database has the wrong "
+                                       "format!")
+
+                data = data[0]
+
+                data_type = data[cols.index("DataType")]
+                class_ = data[cols.index("Class")]
+                if class_ is None:
+                    class_ = "tensor"
+
+                # The actual data
+                raw_data = data[cols.index("Data")]
+
+                if class_ == "scalar":
+
+                    fmt = "<"
+                    if data_type == "float32":
+                        fmt += "f"
+                    elif data_type == "float64":
+                        fmt += "d"
+                    else:
+                        raise NotImplementedError("Data type currently "
+                                                  "not supported!")
+
+                    value = struct.unpack(fmt, raw_data)[0]
+                    # print("scalar: " + str(value))
+
+                    if tensor is None:
+
+                        if len(channel_ids) != 1:
+                            raise RuntimeError(
+                                    "The database has the wrong "
+                                    "format. Scalars should not have "
+                                    "channels.")
+
+                        tensor = value
+
+                else:  # "tensor"
+                    if data_type != "float32":
+                        raise ValueError("We can only process float32 "
+                                         "tensors at this time.")
+
+                    width = data[cols.index("Width")]
+                    height = data[cols.index("Height")]
+
+                    if data_type == "float32":
+                        dt = np.dtype("float32")
+                    else:
+                        raise NotImplementedError("Data type currently "
+                                                  "not supported!")
+
+                    # Little endian always
+                    # TODO: Put in settings table?
+                    dt = dt.newbyteorder("<")
+
+                    value = np.frombuffer(raw_data, dtype=dt)
+                    value = value.reshape((height, width))
+                    value = value.astype(np.float32)
+
+                    if self.transform is not None:
+                        value = self.transform(value)
+
+                    if tensor is None:
+                        shape = (width,
+                                 height,
+                                 1,
+                                 len(channel_ids))
+                        tensor = np.zeros(shape, dtype=np.float32)
+
+                    # Check width and height
+                    if (value.shape[0] != tensor.shape[0]) \
+                            or (value.shape[1] != tensor.shape[1]):
+                        raise RuntimeError("The data in the database are "
+                                           "of different sizes. Use "
+                                           "``transform`` to resize the "
+                                           "slices.")
+
+                    tensor[:, :, 0, channel_id_i] = value
+
+            if self.transform_3d is not None:
+                tensor = self.transform_3d(tensor)
+
+            item[name] = tensor
+
+        return item
+
+    def _getitem_3d(self, idx):
+
+        # Get the "idx"th patient
+        id_ = self._indices[idx]
+
+        row = self._metadata[self._metadata["ID"] == id_]
+
+        # Get SeriesID
+        series_id = str(row["SeriesID"].iloc[0])
+
+        # Get names
+        metadata_sid = self._metadata[
+                self._metadata["SeriesID"] == series_id]
+        names = list(sorted(set(metadata_sid["Name"].tolist())))
+
+        # Column names
+        cols = self._get_column_names()
+
+        # The return data
+        item = dict()
+
+        # Fetch sizes for each "name"
+        # name = names[0]
+        for name in names:
+            metadata_sid_name = metadata_sid[metadata_sid["Name"] == name]
+            sizes = metadata_sid_name[["Width", "Height", "Z", "T", "C"]]
+
+            # Get slice ids, and assume they are of the same length (crash
+            # later)
+            slice_idcs = list(set(sizes["Z"].tolist()))
+
+            # Check time dimension
+            if not all([sz == 1 for sz in sizes["T"]]):
+                raise RuntimeError("Time series data currently not "
+                                   "supported.")
+
+            # Get channel ids
+            channels = list(set(sizes["C"].tolist()))
+
+            tensor = None
+
+            # channel_i = 0
+            for channel_i in range(len(channels)):
+                channel = channels[channel_i]
+
+                # slice_idx_i = 0
+                for slice_idx_i in range(len(slice_idcs)):
+                    slice_idx = slice_idcs[slice_idx_i]
+
+                    metadata_sid_name_c \
+                        = metadata_sid_name[
+                                metadata_sid_name["C"] == channel]
+                    metadata_sid_name_c_z \
+                        = metadata_sid_name_c[
+                                metadata_sid_name_c["Z"] == slice_idx]
+                    if len(metadata_sid_name_c_z) != 1:
+                        raise RuntimeError("The database has the wrong "
+                                           "format!")
+
+                    data = self._select_query(
+                            "SELECT " + ", ".join(cols) + " FROM Data "
+                            "WHERE ID = ?;",
+                            (metadata_sid_name_c_z["ID"].tolist()[0],))
+                    if len(data) != 1:
+                        raise RuntimeError("The database has the wrong "
+                                           "format!")
+                    data = data[0]
+                    data_type = data[cols.index("DataType")]
+                    class_ = data[cols.index("Class")]
+                    if class_ is None:
+                        class_ = "tensor"
+
+                    # The actual data
+                    raw_data = data[cols.index("Data")]
+
+                    if class_ == "scalar":
+
+                        # Little endian always
+                        # TODO: Put in settings table?
+                        fmt = "<"
+                        if data_type == "float32":
+                            fmt += "f"
+                        elif data_type == "float64":
+                            fmt += "d"
+                        else:
+                            raise NotImplementedError("Data type currently "
+                                                      "not supported!")
+
+                        value = struct.unpack(fmt, raw_data)[0]
+
+                        if tensor is None:
+
+                            if len(channels) != 1:
+                                raise RuntimeError(
+                                        "The database has the wrong format. "
+                                        "Scalars should not have channels.")
+
+                            if len(slice_idcs) != 1:
+                                raise RuntimeError(
+                                        "The database has the wrong format. "
+                                        "Scalars should not have slices.")
+
+                            tensor = value
+
+                    else:  # "tensor"
+                        if data_type != "float32":
+                            raise ValueError("We can only process float32 "
+                                             "tensors at this time.")
+
+                        width = data[cols.index("Width")]
+                        height = data[cols.index("Height")]
+
+                        if data_type == "float32":
+                            dt = np.dtype("float32")
+                        else:
+                            raise NotImplementedError("Data type currently "
+                                                      "not supported!")
+
+                        # Little endian always
+                        # TODO: Put in settings table?
+                        dt = dt.newbyteorder("<")
+
+                        value = np.frombuffer(raw_data, dtype=dt)
+                        value = value.reshape((height, width))
+                        value = value.astype(np.float32)
+
+                        if self.transform is not None:
+                            value = self.transform(value)
+
+                        if tensor is None:
+                            shape = (width,
+                                     height,
+                                     len(slice_idcs),
+                                     len(channels))
+                            tensor = np.zeros(shape, dtype=np.float32)
+
+                        # Check width and height
+                        if (value.shape[0] != tensor.shape[0]) \
+                                or (value.shape[1] != tensor.shape[1]):
+                            raise RuntimeError("The data in the database are "
+                                               "of different sizes. Use "
+                                               "``transform`` to resize the "
+                                               "slices.")
+
+                        tensor[:, :, slice_idx_i, channel_i] = value
+
+            if self.transform_3d is not None:
+                tensor = self.transform_3d(tensor)
+
+            item[name] = tensor
+
+        return item
+
+    def __len__(self):
+
+        if (self._metadata is None) or (self._indices is None):
+            self._read_metadata()
+
+        return len(self._indices)
+
+    def __getitem__(self, idx):
+
+        if (self._metadata is None) or (self._indices is None):
+            self._read_metadata()
+
+        idx = int(idx)
+
+        if self.form == "2d":
+
+            tensor = self._getitem_2d(idx)
+
+        else:  # self.form == "3d"
+
+            tensor = self._getitem_3d(idx)
+
+        if self.transform is not None:
+            tensor = self.transform(tensor)
+
+        return tensor
 
 
 if _HAS_GENERATOR:

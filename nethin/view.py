@@ -18,7 +18,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from keras.utils import conv_utils
+import keras.backend as K
 
 
 __all__ = ["image_3d"]
@@ -31,18 +31,23 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
 
     Parameters
     ----------
-    images : numpy.ndarray or str
+    images : numpy.ndarray, list of numpy.ndarray, or str
         A numpy array of shape (B, H, W, C) if ``data_format="channels_last"``,
-        and (B, C, H, W) if ``data_format="channels_first"``. If a str, it is
-        the path to a file containing an image of the specified format. The
-        file must either be a numpy npz file or a pickled file (binary).
+        and (B, C, H, W) if ``data_format="channels_first"``. A list of numpy
+        arrays of shape (B, H, W, C)  if ``data_format="channels_last"``, and
+        a list of numpy arrays of shape (B, C, H, W) if
+        ``data_format="channels_first"``. If a str, it is the path to a file
+        containing an image of the specified format. The file must either be a
+        numpy npz file or a pickled file (binary).
 
     cmap : `~matplotlib.colors.Colormap`, optional, default: None
         If None, default to rc `image.cmap` value.
 
-    vmin, vmax : scalar, optional, default: None
+    vmin, vmax : scalar, or list of scalar, optional, default: None
         `vmin` and `vmax` are used to normalize the image to the
-        ``[vmin, vmax]`` range.
+        ``[vmin, vmax]`` range. If a scalar, the same range is used for all
+        channels. If a list, the number of values must be the same as the
+        number of channels, with one value for each channel (can be None).
 
     title : str, optional, default: None
         A title string for the plot.
@@ -59,6 +64,19 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
         in your Keras config file at ``~/.keras/keras.json``. If you never set
         it, then it will be "channels_last".
     """
+    if hasattr(K, "normalize_data_format"):
+        data_format = K.normalize_data_format(data_format)
+    else:
+        # TODO: Change since d40656e5799dfd22e96b8bab217638b2934a6894 (#10690).
+        #       Remove when appropriate ...
+        from keras.utils import conv_utils
+        data_format = conv_utils.normalize_data_format(data_format)
+
+    if data_format == "channels_last":
+        channel_axis = 3
+    else:  # data_format == "channels_first":
+        channel_axis = 1
+
     if isinstance(images, six.string_types):
         filename = images
 
@@ -101,32 +119,64 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
         if not found:
             raise ValueError("Unable to open file! Is it an npz or pkl file?")
 
-    vmin = float(vmin) if vmin is not None else vmin
-    vmax = float(vmax) if vmax is not None else vmax
+    elif isinstance(images, (list, tuple)):
+        for i in range(0, len(images)):
+            if images[i].ndim != 4:
+                raise ValueError("Input images must have shape (B, H, W, C) "
+                                 "or (B, C, H, W).")
+
+        images = np.concatenate(images, axis=channel_axis)
+
+    if isinstance(vmin, (list, tuple)):
+        vmin_ = []
+        for v in vmin:
+            if v is not None:
+                vmin_.append(float(v))
+            else:
+                vmin_.append(v)
+        vmin = vmin_
+        if len(vmin) != images.shape[channel_axis]:
+            raise ValueError("vmin must have the same number of elements as "
+                             "there are channels in images.")
+    else:
+        vmin = float(vmin) if vmin is not None else vmin
+        vmin = [vmin] * images.shape[channel_axis]
+
+    if isinstance(vmax, (list, tuple)):
+        vmax_ = []
+        for v in vmax:
+            if v is not None:
+                vmax_.append(float(v))
+            else:
+                vmax_.append(v)
+        vmax = vmax_
+        if len(vmax) != images.shape[channel_axis]:
+            raise ValueError("vmax must have the same number of elements as "
+                             "there are channels in images.")
+    else:
+        vmax = float(vmax) if vmax is not None else vmax
+        vmax = [vmax] * images.shape[channel_axis]
+
     if channel_names is not None:
         if isinstance(channel_names, six.string_types):
             channel_names = [str(channel_names)]
         else:
             channel_names = list(channel_names)
-    data_format = conv_utils.normalize_data_format(data_format)
 
     if images.ndim != 4:
         raise ValueError("Input image must have shape (B, H, W, C) or "
                          "(B, C, H, W).")
 
-    if data_format == "channels_last":
-        channel_axis = 3
-    else:  # data_format == "channels_first":
-        channel_axis = 1
-
     if channel_names is not None:
         if len(channel_names) < images.shape[channel_axis]:
-            channel_names.extend([None] * (images.shape[channel_axis] - len(channel_names)))
+            channel_names.extend(
+                    [None] * (images.shape[channel_axis] - len(channel_names)))
 
     ny = int(np.floor(np.sqrt(images.shape[channel_axis])) + 0.5)
     nx = int(np.ceil(images.shape[channel_axis] / float(ny)) + 0.5)
 
-    handler_data = [0, images.shape[0], False]  # Slice index, total number of frames, running
+    # Format: Slice index, total number of frames, running
+    handler_data = [0, images.shape[0], False]
 
     fig, axs = plt.subplots(nrows=ny, ncols=nx, sharex=True, sharey=True)
     if (ny == 1) and (nx == 1):
@@ -138,18 +188,23 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
             y = i // nx
             x = i % nx
             if data_format == "channels_last":
-                axs[y, x].imshow(images[slice_i, :, :, i], cmap=cmap, vmin=vmin, vmax=vmax)
+                axs[y, x].imshow(images[slice_i, :, :, i],
+                                 cmap=cmap, vmin=vmin[i], vmax=vmax[i])
             else:
-                axs[y, x].imshow(images[slice_i, i, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
+                axs[y, x].imshow(images[slice_i, i, :, :],
+                                 cmap=cmap, vmin=vmin[i], vmax=vmax[i])
+
+        for i in range(images.shape[channel_axis]):
+            y = i // nx
+            x = i % nx
+            if (channel_names is None) or (channel_names[i] is None):
+                axs[y, x].set_title("Channel %d (slice %d)"
+                                    % (i + 1, slice_i))
+            else:
+                axs[y, x].set_title(str(channel_names[i]) + " (slice %d)"
+                                    % (slice_i,))
 
         if first_run:
-            for i in range(images.shape[channel_axis]):
-                y = i // nx
-                x = i % nx
-                if (channel_names is None) or (channel_names[i] is None):
-                    axs[y, x].set_title("Channel %d" % (i + 1,))
-                else:
-                    axs[y, x].set_title(str(channel_names[i]))
             for i in range(images.shape[channel_axis], ny * nx):
                 y = i // nx
                 x = i % nx

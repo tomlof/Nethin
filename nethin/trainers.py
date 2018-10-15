@@ -125,7 +125,7 @@ class BasicTrainer(BaseTraner):
 
         save_every : int, optional, default: None
             When not None, will save the model and current loss every
-            ``save_every`` epoch.
+            ``save_every`` epoch. It will also save after the very first epoch.
 
         save_path : str, optional, default: None
             When ``save_every`` is not None, the files will be stored in the
@@ -149,7 +149,7 @@ class BasicTrainer(BaseTraner):
         for it in range(self.max_epochs):
 
             # Save untrained model
-            if (save_every is not None) and (it == 0):
+            if (save_every is not None) and (it == 1):
                 self._save_every(it, save_path)
 
             batch_it_train = 0

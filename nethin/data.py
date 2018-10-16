@@ -4,7 +4,7 @@ Contains means to read, generate and handle data.
 
 Created on Tue Oct  3 08:20:52 2017
 
-Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2018, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -19,6 +19,9 @@ import bisect
 import warnings
 import sqlite3
 import struct
+import queue
+import traceback
+import collections
 
 import numpy as np
 from six import with_metaclass
@@ -65,13 +68,14 @@ __all__ = ["BaseGenerator",
 try:
     from torch.utils.data import Dataset
     from torch.utils.data import ConcatDataset
+    from torch.utils.data import DataLoader
     _HAS_PYTORCH = True
 
 except (ImportError):
     _HAS_PYTORCH = False
 
     class Dataset(object):
-        """This abstract class is a copy of torch.utils.data.Dataset, used as
+        r"""This abstract class is a copy of torch.utils.data.Dataset, used as
         the base class for all datasets. PyTorch pydoc follows:
 
         An abstract class representing a Dataset.
@@ -91,8 +95,8 @@ except (ImportError):
             return ConcatDataset([self, other])
 
     class ConcatDataset(Dataset):
-        """This abstract class is a copy of torch.utils.data.ConcatDataset,
-        used as the base class for all datasets. PyTorch pydoc follows:
+        r"""This class is a copy of torch.utils.data.ConcatDataset. PyTorch
+        pydoc follows:
 
         Dataset to concatenate multiple datasets.
 
@@ -136,6 +140,559 @@ except (ImportError):
                           "cumulative_sizes", DeprecationWarning, stacklevel=2)
 
             return self.cumulative_sizes
+
+    class _DataLoaderIter(object):
+        r"""This class is a copy of
+        torch.utils.data.dataloader._DataLoaderIter. PyTorch pydoc follows:
+
+        Iterates once over the DataLoader's dataset, as specified by the
+        sampler.
+        """
+        def __init__(self, loader):
+            self.dataset = loader.dataset
+            self.collate_fn = loader.collate_fn
+            self.batch_sampler = loader.batch_sampler
+
+            # Nethin addition: We don't allow multiprocess loading of images
+            if loader.num_workers > 0:
+                warnings.warm("PyTorch is not available. Multithreaded "
+                              "loading is not available.")
+            self.num_workers = 0  # loader.num_workers
+
+            # Nethin addition: We don't allow to pin on GPU
+            if loader.pin_memory:
+                warnings.warm("PyTorch is not available. Tensors can not be "
+                              "pinned on the GPU.")
+            self.pin_memory = False
+            # self.pin_memory = loader.pin_memory and torch.cuda.is_available()
+
+            self.timeout = loader.timeout
+
+            self.sample_iter = iter(self.batch_sampler)
+
+            # Nethin addition! Everything below here was removed:
+
+            # base_seed = torch.LongTensor(1).random_().item()
+
+            # if self.num_workers > 0:
+            #     ...
+
+        def __len__(self):
+            return len(self.batch_sampler)
+
+        def _get_batch(self):
+            # In the non-timeout case, worker exit is covered by SIGCHLD
+            # handler. But if `pin_memory=True`, we still need account for the
+            # possibility that `pin_memory_thread` dies.
+            if self.timeout > 0:
+                try:
+                    return self.data_queue.get(timeout=self.timeout)
+                except queue.Empty:
+                    raise RuntimeError("DataLoader timed out after {} "
+                                       "seconds".format(self.timeout))
+            # Nethin addition: self.pin_memory is False!
+            # elif self.pin_memory:
+            #     while self.pin_memory_thread.is_alive():
+            #         try:
+            #             return self.data_queue.get(
+            #                 timeout=MP_STATUS_CHECK_INTERVAL)
+            #         except queue.Empty:
+            #             continue
+            #     else:
+            #         # while condition is false, i.e., pin_memory_thread died.
+            #         raise RuntimeError('Pin memory thread exited '
+            #                            'unexpectedly')
+            #     # In this case, `self.data_queue` is a `queue.Queue`,. But we
+            #     # don't need to call `.task_done()` because we don't use
+            #     # `.join()`.
+            else:
+                return self.data_queue.get()
+
+        def __next__(self):
+            if self.num_workers == 0:  # same-process loading
+                indices = next(self.sample_iter)  # may raise StopIteration
+                batch = self.collate_fn([self.dataset[i] for i in indices])
+                # Nethin addition: self.pin_memory is False!
+                # if self.pin_memory:
+                #     batch = pin_memory_batch(batch)
+                return batch
+
+            # Nethin addition: self.num_workers is always 0, so the below code
+            # was removed.
+            # # check if the next sample has already been generated
+            # if self.rcvd_idx in self.reorder_dict:
+            #     batch = self.reorder_dict.pop(self.rcvd_idx)
+            #     return self._process_next_batch(batch)
+            #
+            # if self.batches_outstanding == 0:
+            #     self._shutdown_workers()
+            #     raise StopIteration
+            #
+            # while True:
+            #     assert (not self.shutdown and self.batches_outstanding > 0)
+            #     idx, batch = self._get_batch()
+            #     self.batches_outstanding -= 1
+            #     if idx != self.rcvd_idx:
+            #         # store out-of-order samples
+            #         self.reorder_dict[idx] = batch
+            #         continue
+            #     return self._process_next_batch(batch)
+
+        # Nethin addition: We do not support Python 2.
+        # next = __next__  # Python 2 compatibility
+
+        def __iter__(self):
+            return self
+
+        # Nethin addition: self.num_workers is always 0, so the below two
+        # methods were removed.
+        # def _put_indices(self):
+        #     assert self.batches_outstanding < 2 * self.num_workers
+        #     indices = next(self.sample_iter, None)
+        #     if indices is None:
+        #         return
+        #     self.index_queues[self.worker_queue_idx].put((self.send_idx,
+        #                                                   indices))
+        #     self.worker_queue_idx \
+        #         = (self.worker_queue_idx + 1) % self.num_workers
+        #     self.batches_outstanding += 1
+        #     self.send_idx += 1
+        #
+        # def _process_next_batch(self, batch):
+        #     self.rcvd_idx += 1
+        #     self._put_indices()
+        #     if isinstance(batch, ExceptionWrapper):
+        #         raise batch.exc_type(batch.exc_msg)
+        #     return batch
+
+        def __getstate__(self):
+            # TODO: add limited pickling support for sharing an iterator
+            # across multiple threads for HOGWILD.
+            # Probably the best way to do this is by moving the sample pushing
+            # to a separate thread and then just sharing the data queue
+            # but signalling the end is tricky without a non-blocking API
+            raise NotImplementedError("_DataLoaderIter cannot be pickled")
+
+        # Nethin addition: self.num_workers is always 0, so the below code
+        # will never be run, and was therefore removed.
+        # def _shutdown_workers(self):
+        #     # See NOTE [ Data Loader Multiprocessing Shutdown Logic ] for
+        #     # details on the logic of this function.
+        #     if not self.shutdown:
+        #         self.shutdown = True
+        #         # Removes pids from the C side data structure first so worker
+        #         # termination afterwards won't trigger false positive error
+        #         # report.
+        #         if self.worker_pids_set:
+        #             _remove_worker_pids(id(self))
+        #             self.worker_pids_set = False
+        #
+        #         self.done_event.set()
+        #
+        #         # Exit `pin_memory_thread` first because exiting workers may
+        #         # leave corrupted data in `worker_result_queue` which
+        #         # `pin_memory_thread` reads from.
+        #         if hasattr(self, 'pin_memory_thread'):
+        #             # Use hasattr in case error happens before we set the
+        #             # attribute. First time do `worker_result_queue.put` in
+        #             # this process.
+        #
+        #             # `cancel_join_thread` in case that `pin_memory_thread`
+        #             # exited.
+        #             self.worker_result_queue.cancel_join_thread()
+        #             self.worker_result_queue.put(None)
+        #             self.pin_memory_thread.join()
+        #
+        #             # Indicate that no more data will be put on this queue by
+        #             # the current process. This **must** be called after
+        #             # `pin_memory_thread` is joined because that thread
+        #             # shares the same pipe handles with this loader thread.
+        #             # If the handle is closed, Py3 will error in this case,
+        #             # but Py2 will just time out even if there is data in the
+        #             # queue.
+        #             self.worker_result_queue.close()
+        #
+        #         # Exit workers now.
+        #         for q in self.index_queues:
+        #             q.put(None)
+        #             # Indicate that no more data will be put on this queue by
+        #             # the current process.
+        #             q.close()
+        #         for w in self.workers:
+        #             w.join()
+
+        def __del__(self):
+            # Nethin addition: self.num_workers is always 0, so the below code
+            # was removed.
+            # if self.num_workers > 0:
+            #     self._shutdown_workers()
+            pass
+
+    def default_collate(batch):
+        r"""This function is an altered copy of
+        torch.utils.data.dataloader.default_collate. PyTorch pydoc follows:
+
+        Puts each data field into a tensor with outer dimension batch size.
+        """
+        # Nethin addition: No tensors
+        error_msg = "batch must contain ndarrays, numbers, dicts or " + \
+                    "lists; found {}"
+        # error_msg = "batch must contain tensors, numbers, dicts or " + \
+        #             "lists; found {}"
+        elem_type = type(batch[0])
+        # Nethin addition: No batches will be torch tensors, so removed.
+        # if isinstance(batch[0], torch.Tensor):
+        #     out = None
+        #     if _use_shared_memory:
+        #         # If we're in a background process, concatenate directly into
+        #         # a shared memory tensor to avoid an extra copy
+        #         numel = sum([x.numel() for x in batch])
+        #         storage = batch[0].storage()._new_shared(numel)
+        #         out = batch[0].new(storage)
+        #     return torch.stack(batch, 0, out=out)
+        if elem_type.__module__ == 'numpy' and elem_type.__name__ != 'str_' \
+                and elem_type.__name__ != 'string_':
+            elem = batch[0]
+            if elem_type.__name__ == 'ndarray':
+                # array of string classes and object
+                if re.search('[SaUO]', elem.dtype.str) is not None:
+                    raise TypeError(error_msg.format(elem.dtype))
+
+                # Nethin addition: Stack numpy arrays instead of Pytorch
+                # tensors
+                return np.concatenate([b for b in batch], axis=0)
+                # return torch.stack([torch.from_numpy(b) for b in batch], 0)
+            if elem.shape == ():  # scalars
+                py_type = float if elem.dtype.name.startswith('float') else int
+                # Nethin addition: Make numpy arrays instead of Pytorch tensors
+                return np.array(list(map(py_type, batch)))
+                # return numpy_type_map[elem.dtype.name](list(map(py_type,
+                #                                                 batch)))
+        # Nethin addition: Use six instead of torch._six:
+        elif isinstance(batch[0], float):
+            return np.array(batch)
+        elif isinstance(batch[0], six.integer_types):
+            return np.array(batch)
+        # elif isinstance(batch[0], int_classes):
+        #     return torch.LongTensor(batch)
+        # elif isinstance(batch[0], float):
+        #     return torch.DoubleTensor(batch)
+        elif isinstance(batch[0], six.string_types):
+            # elif isinstance(batch[0], string_classes):
+            return batch
+        elif isinstance(batch[0], collections.abc.Mapping):
+            print(batch)
+            # elif isinstance(batch[0], container_abcs.Mapping):
+            return {key: default_collate([d[key] for d in batch])
+                    for key in batch[0]}
+        elif isinstance(batch[0], collections.abc.Sequence):
+            # elif isinstance(batch[0], container_abcs.Sequence):
+            transposed = zip(*batch)
+            return [default_collate(samples) for samples in transposed]
+
+        raise TypeError((error_msg.format(type(batch[0]))))
+
+    class Sampler(object):
+        r"""This class is a copy of torch.utils.data.sampler.Sampler. PyTorch
+        pydoc follows:
+
+        Base class for all Samplers.
+
+        Every Sampler subclass has to provide an __iter__ method, providing a
+        way to iterate over indices of dataset elements, and a __len__ method
+        that returns the length of the returned iterators.
+        """
+        def __init__(self, data_source):
+            pass
+
+        def __iter__(self):
+            raise NotImplementedError
+
+        def __len__(self):
+            raise NotImplementedError
+
+    class SequentialSampler(Sampler):
+        r"""This class is a copy of torch.utils.data.sampler.SequentialSampler.
+        PyTorch pydoc follows:
+
+        Samples elements sequentially, always in the same order.
+
+        Arguments:
+            data_source (Dataset): dataset to sample from
+        """
+        def __init__(self, data_source):
+            self.data_source = data_source
+
+        def __iter__(self):
+            return iter(range(len(self.data_source)))
+
+        def __len__(self):
+            return len(self.data_source)
+
+    class RandomSampler(Sampler):
+        r"""This class is an altered copy of
+        torch.utils.data.sampler.RandomSampler. PyTorch pydoc follows:
+
+        Samples elements randomly. If without replacement, then sample from
+        a shuffled dataset. If with replacement, then user can specify
+        ``num_samples`` to draw.
+
+        Parameters
+        ----------
+        data_source : Dataset
+            The dataset to sample from.
+
+        num_samples : int, optional
+            The number of samples to draw, default is ``len(dataset)``.
+
+        replacement : bool, optional
+            Samples are drawn with replacement if ``True``, default is
+            ``False``.
+        """
+        def __init__(self, data_source, replacement=False, num_samples=None):
+            self.data_source = data_source
+            self.num_samples = num_samples
+            self.replacement = replacement
+
+            if self.num_samples is not None and replacement is False:
+                raise ValueError("With replacement=False, num_samples should "
+                                 "not be specified, since a random permute "
+                                 "will be performed.")
+
+            if self.num_samples is None:
+                self.num_samples = len(self.data_source)
+
+            if not isinstance(self.num_samples, int) or self.num_samples <= 0:
+                raise ValueError("num_samples should be a positive integeral "
+                                 "value, but got num_samples={}".format(
+                                         self.num_samples))
+            if not isinstance(self.replacement, bool):
+                raise ValueError("replacement should be a boolean value, but "
+                                 "got replacement={}".format(self.replacement))
+
+        def __iter__(self):
+            n = len(self.data_source)
+            if self.replacement:
+                # Nethin addition: Use numpy instead of Pytorch
+                return iter(np.random.randint(low=0,
+                                              high=n,
+                                              size=(self.num_samples,),
+                                              dtype=np.int64).tolist())
+                # return iter(torch.randint(high=n, size=(self.num_samples,),
+                #                           dtype=torch.int64).tolist())
+
+            # Nethin addition: Use numpy instead of Pytorch
+            return iter(np.random.permutation(n).tolist())
+            # return iter(torch.randperm(n).tolist())
+
+        def __len__(self):
+            return len(self.data_source)
+
+    class BatchSampler(Sampler):
+        r"""This class is an altered copy of
+        torch.utils.data.sampler.BatchSampler. PyTorch pydoc follows:
+
+        Wraps another sampler to yield a mini-batch of indices.
+
+        Parameters
+        ----------
+        sampler : Sampler
+            Base sampler.
+
+        batch_size : int
+            Size of mini-batch.
+
+        drop_last : bool
+            If ``True``, the sampler will drop the last batch if its size would
+            be less than ``batch_size``.
+
+        Examples
+        --------
+        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3,
+        ...      drop_last=False))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+        >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3,
+        ...      drop_last=True))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+        """
+        def __init__(self, sampler, batch_size, drop_last):
+            if not isinstance(sampler, Sampler):
+                raise ValueError("sampler should be an instance of "
+                                 "data.Sampler, but got sampler={}"
+                                 .format(sampler))
+            # Nethin addition: Use six instead of torch._six
+            # if not isinstance(batch_size, _int_classes) \
+            #     or isinstance(batch_size, bool) or batch_size <= 0
+            if not isinstance(batch_size, six.integer_types) \
+                    or isinstance(batch_size, bool) or batch_size <= 0:
+                raise ValueError("batch_size should be a positive integeral "
+                                 "value, but got batch_size={}".format(
+                                         batch_size))
+            if not isinstance(drop_last, bool):
+                raise ValueError("drop_last should be a boolean value, but "
+                                 "got drop_last={}".format(drop_last))
+            self.sampler = sampler
+            self.batch_size = batch_size
+            self.drop_last = drop_last
+
+        def __iter__(self):
+            batch = []
+            for idx in self.sampler:
+                batch.append(idx)
+                if len(batch) == self.batch_size:
+                    yield batch
+                    batch = []
+            if len(batch) > 0 and not self.drop_last:
+                yield batch
+
+        def __len__(self):
+            if self.drop_last:
+                return len(self.sampler) // self.batch_size
+            else:
+                return (len(self.sampler) + self.batch_size - 1) \
+                    // self.batch_size
+
+    class ExceptionWrapper(object):
+        r"""This class is a copy of
+        torch.utils.data.dataloader.ExceptionWrapper. PyTorch pydoc follows:
+
+        Wraps an exception plus traceback to communicate across threads.
+        """
+        def __init__(self, exc_info):
+            # It is important that we don't store exc_info, see
+            # NOTE [ Python Traceback Reference Cycle Problem ]
+            self.exc_type = exc_info[0]
+            self.exc_msg = "".join(traceback.format_exception(*exc_info))
+
+    class DataLoader(object):
+        r"""This class is an altered copy of
+        torch.utils.data.dataloader.DataLoader. PyTorch pydoc follows:
+
+        Data loader. Combines a dataset and a sampler, and provides
+        single- or multi-process iterators over the dataset.
+
+        Arguments:
+            dataset (Dataset): dataset from which to load the data.
+            batch_size (int, optional): how many samples per batch to load
+                (default: ``1``).
+            shuffle (bool, optional): set to ``True`` to have the data
+                reshuffled at every epoch (default: ``False``).
+            sampler (Sampler, optional): defines the strategy to draw samples
+                from the dataset. If specified, ``shuffle`` must be False.
+            batch_sampler (Sampler, optional): like sampler, but returns a
+                batch of indices at a time. Mutually exclusive with
+                :attr:`batch_size`, :attr:`shuffle`, :attr:`sampler`, and
+                :attr:`drop_last`.
+            num_workers (int, optional): how many subprocesses to use for data
+                loading. 0 means that the data will be loaded in the main
+                process. (default: ``0``)
+            collate_fn (callable, optional): merges a list of samples to form a
+                mini-batch.
+            pin_memory (bool, optional): If ``True``, the data loader will copy
+                tensors into CUDA pinned memory before returning them.
+            drop_last (bool, optional): set to ``True`` to drop the last
+                incomplete batch, if the dataset size is not divisible by the
+                batch size. If ``False`` and the size of dataset is not
+                divisible by the batch size, then the last batch will be
+                smaller. (default: ``False``)
+            timeout (numeric, optional): if positive, the timeout value for
+                collecting a batch from workers. Should always be non-negative.
+                (default: ``0``)
+            worker_init_fn (callable, optional): If not ``None``, this will be
+                called on each worker subprocess with the worker id (an int in
+                ``[0, num_workers - 1]``) as input, after seeding and before
+                data loading. (default: ``None``)
+
+        .. note:: By default, each worker will have its PyTorch seed set to
+                  ``base_seed + worker_id``, where ``base_seed`` is a long
+                  generated by main process using its RNG. However, seeds for
+                  other libraies may be duplicated upon initializing workers
+                  (w.g., NumPy), causing each worker to return identical random
+                  numbers. (See :ref:`dataloader-workers-random-seed` section
+                  in FAQ.) You may use :func:`torch.initial_seed()` to access
+                  the PyTorch seed for each worker in :attr:`worker_init_fn`,
+                  and use it to set other seeds before data loading.
+
+        .. warning:: If ``spawn`` start method is used, :attr:`worker_init_fn`
+                     cannot be an unpicklable object, e.g., a lambda function.
+        """
+        __initialized = False
+
+        def __init__(self, dataset, batch_size=1, shuffle=False, sampler=None,
+                     batch_sampler=None, num_workers=0,
+                     collate_fn=default_collate, pin_memory=False,
+                     drop_last=False, timeout=0, worker_init_fn=None):
+            self.dataset = dataset
+            self.batch_size = batch_size
+
+            # Nethin addition: We don't allow multiprocess loading of images
+            if int(num_workers) > 0:
+                warnings.warm("PyTorch is not available. Multithreaded "
+                              "loading is not available. num_workers will be "
+                              "0.")
+            self.num_workers = 0
+            # self.num_workers = num_workers
+
+            self.collate_fn = collate_fn
+
+            # Nethin addition: We don't allow to pin on GPU
+            if bool(pin_memory):
+                warnings.warm("PyTorch is not available. Tensors can not be "
+                              "pinned on the GPU.")
+            self.pin_memory = False
+            # self.pin_memory = pin_memory
+
+            self.drop_last = drop_last
+            self.timeout = timeout
+            self.worker_init_fn = worker_init_fn
+
+            if timeout < 0:
+                raise ValueError('timeout option should be non-negative')
+
+            if batch_sampler is not None:
+                if batch_size > 1 or shuffle or sampler is not None \
+                        or drop_last:
+                    raise ValueError('batch_sampler option is mutually '
+                                     'exclusive with batch_size, shuffle, '
+                                     'sampler, and drop_last')
+                self.batch_size = None
+                self.drop_last = None
+
+            if sampler is not None and shuffle:
+                raise ValueError('sampler option is mutually exclusive with '
+                                 'shuffle')
+
+            if self.num_workers < 0:
+                raise ValueError('num_workers option cannot be negative; '
+                                 'use num_workers=0 to disable '
+                                 'multiprocessing.')
+
+            if batch_sampler is None:
+                if sampler is None:
+                    if shuffle:
+                        sampler = RandomSampler(dataset)
+                    else:
+                        sampler = SequentialSampler(dataset)
+                batch_sampler = BatchSampler(sampler, batch_size, drop_last)
+
+            self.sampler = sampler
+            self.batch_sampler = batch_sampler
+            self.__initialized = True
+
+        def __setattr__(self, attr, val):
+            if self.__initialized and attr in ('batch_size', 'sampler',
+                                               'drop_last'):
+                raise ValueError('{} attribute should not be set after {} is '
+                                 'initialized'.format(attr,
+                                                      self.__class__.__name__))
+
+            super(DataLoader, self).__setattr__(attr, val)
+
+        def __iter__(self):
+            return _DataLoaderIter(self)
+
+        def __len__(self):
+            return len(self.batch_sampler)
 
 
 class SQLiteDataset(Dataset):
@@ -380,8 +937,11 @@ class SQLiteDataset(Dataset):
             # sizes = metadata_sid_name[["Width", "Height", "Z", "T", "C"]]
 
             # Get a particular slice (list of all channels for a slice)
-            metadata_sid_name_Z = metadata_sid_name[
-                    metadata_sid_name["Z"] == Z]
+            if len(metadata_sid_name) == 1:  # Only one slice, or e.g. a scalar
+                metadata_sid_name_Z = metadata_sid_name
+            else:
+                metadata_sid_name_Z = metadata_sid_name[
+                        metadata_sid_name["Z"] == Z]
             channel_ids = [int(v)
                            for v in metadata_sid_name_Z["ID"].tolist()]
 

@@ -19,5 +19,9 @@ The data augmentation may require:
 
 The data readers may require:
  * SciPy (>= 1.1.0)
- * PyDicom (>= 1.1.0)
+ * Pydicom (>= 1.1.0)
  * scikit-image (>= 0.14.0)
+
+The data readers benefit from having PyTorch installed:
+ * PyTorch (>= 0.4.1)
+

@@ -9,11 +9,18 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 import abc
+import warnings
 
 from six import with_metaclass
 
 import numpy as np
-import skimage.transform as transform
+try:
+    import skimage.transform as transform
+    _HAS_SKIMAGE = True
+except (ImportError):
+    _HAS_SKIMAGE = False
+
+    import scipy.ndimage
 
 try:
     from keras.utils.conv_utils import normalize_data_format
@@ -21,14 +28,15 @@ except ImportError:
     from keras.backend.common import normalize_data_format
 
 __all__ = ["BaseAugmentation",
-           "ImageResize", "ImageCrop", "ImageFlip",
+           "Flip",
+           "ImageResize", "ImageCrop",
            "ImageHistogramShift", "ImageHistogramScale",
            "ImageHistogramAffineTransform", "ImageHistogramTransform",
            "ImageTransform",
            "Pipeline"]
 
 
-class BaseAugmentation(with_metaclass(abc.ABCMeta, object)):
+class BaseAugmentation(metaclass=abc.ABCMeta):
     """Base class for data augmentation functions.
 
     Parameters
@@ -36,11 +44,11 @@ class BaseAugmentation(with_metaclass(abc.ABCMeta, object)):
     data_format : str, optional
         One of `channels_last` (default) or `channels_first`. The ordering of
         the dimensions in the inputs. `channels_last` corresponds to inputs
-        with shape `(batch, height, width, channels)` while `channels_first`
-        corresponds to inputs with shape `(batch, channels, height, width)`. It
-        defaults to the `image_data_format` value found in your Keras config
-        file at `~/.keras/keras.json`. If you never set it, then it will be
-        "channels_last".
+        with shape `(batch, height, width, [depth], channels)` while
+        `channels_first` corresponds to inputs with shape `(batch, channels,
+        height, [depth], width)`. It defaults to the `image_data_format` value
+        found in your Keras config file at `~/.keras/keras.json`. If you never
+        set it, then it will be "channels_last".
 
     random_state : int, float, array_like or numpy.random.RandomState, optional
         A random state to use when sampling pseudo-random numbers. If int,
@@ -80,7 +88,206 @@ class BaseAugmentation(with_metaclass(abc.ABCMeta, object)):
         return inputs
 
 
-class ImageResize(BaseAugmentation):
+class Flip(BaseAugmentation):
+    """Flips an image in any direction.
+
+    Parameters
+    ----------
+    probability : float or list/tuple of floats
+        The probability of a flip. If a float, flip with probability
+        ``probability`` in the horizontal direction (second image dimension)
+        when ``axis=1`` or ``axis=None``, and otherwise flip with probability
+        ``probability`` along all axes defined by ``axis``. If a list/tuple and
+        ``axis=None``, flip with ``probability[d]`` in the direction of
+        dimension ``d``, and if ``axis`` is a list or tuple, flip with
+        probability ``probability[i]`` along dimension ``axis[i]`` (this case
+        requires that ``len(probability) == len(axis)``). If fewer
+        probabilities given than axes present, only the first given axes will
+        be considered. Default is 0.5, which means to flip with probability
+        ``0.5`` in the horizontal direction (along ``axis=1``), or to flip with
+        probability ``0.5`` along the axes defined by ``axis``.
+
+    axis : None or int or tuple of ints, optional
+         Axis or axes along which to flip the image. If axis is a tuple
+         of ints, flipping is performed with the provided probabilities on all
+         of the axes specified in the tuple. If an axis is negative it counts
+         from the last to the first axis. If ``axis=None``, the axes are
+         determined from ``probability``. Default is ``axis=None``, which means
+         to flip along the second images axis (the assumed horizontal axis), or
+         to flip along the axes using indices ``0, ...,
+         len(probabilities) - 1.``
+
+    data_format : str, optional
+        One of ``"channels_last"`` (default) or ``"channels_first"``. The
+        ordering of the dimensions in the inputs. ``"channels_last"``
+        corresponds to inputs with shape ``(batch, [image dimensions ...],
+        channels)`` while ``channels_first`` corresponds to inputs with shape
+        ``(batch, channels, [image dimensions ...])``. It defaults to the
+        ``image_data_format`` value found in your Keras config file at
+        ``~/.keras/keras.json``. If you never set it, then it will be
+        ``"channels_last"``.
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
+    Examples
+    --------
+    >>> from nethin.augmentation import Flip
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>>
+    >>> X = np.random.rand(2, 3, 1)
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.37454012,  0.95071431,  0.73199394],
+           [ 0.59865848,  0.15601864,  0.15599452]])
+    >>> flip_h = Flip(probability=1.0,
+    ...               random_state=42, data_format="channels_last")
+    >>> flip_h(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.73199394,  0.95071431,  0.37454012],
+           [ 0.15599452,  0.15601864,  0.59865848]])
+    >>> flip_v = Flip(probability=[1.0, 0.0],
+    ...               random_state=42, data_format="channels_last")
+    >>> flip_v(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.59865848,  0.15601864,  0.15599452],
+           [ 0.37454012,  0.95071431,  0.73199394]])
+    >>> flip_hv = Flip(probability=[0.5, 0.5],
+    ...                random_state=42, data_format="channels_last")
+    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.59865848,  0.15601864,  0.15599452],
+           [ 0.37454012,  0.95071431,  0.73199394]])
+    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.37454012,  0.95071431,  0.73199394],
+           [ 0.59865848,  0.15601864,  0.15599452]])
+    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.15599452,  0.15601864,  0.59865848],
+           [ 0.73199394,  0.95071431,  0.37454012]])
+    >>> np.random.seed(42)
+    >>> X = np.random.rand(2, 3, 1)
+    >>> flip = Flip(probability=1.0, random_state=42)
+    >>> flip(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.73199394,  0.95071431,  0.37454012],
+           [ 0.15599452,  0.15601864,  0.59865848]])
+    >>> np.random.seed(42)
+    >>> X = np.random.rand(1, 2, 3)
+    >>> flip = Flip(probability=1.0, random_state=42)
+    >>> flip(X)[:, :, 0]  # Wrong
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.59865848,  0.37454012]])
+    >>> flip(X)[0, :, :]  # Wrong
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.59865848,  0.15601864,  0.15599452],
+           [ 0.37454012,  0.95071431,  0.73199394]])
+    >>> flip = Flip(probability=1.0,
+    ...             random_state=42, data_format="channels_first")
+    >>> flip(X)[0, :, :]  # Right
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.73199394,  0.95071431,  0.37454012],
+           [ 0.15599452,  0.15601864,  0.59865848]])
+    >>>
+    >>> np.random.seed(42)
+    >>> X = np.random.rand(5, 4, 3, 2)
+    >>> X[:, :, 0, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.37454012, 0.05808361, 0.83244264, 0.43194502],
+           [0.45606998, 0.60754485, 0.30461377, 0.03438852],
+           [0.54671028, 0.59789998, 0.38867729, 0.14092422],
+           [0.00552212, 0.35846573, 0.31098232, 0.11959425],
+           [0.52273283, 0.31435598, 0.22879817, 0.63340376]])
+    >>> flip = Flip(probability=1.0, random_state=42)
+    >>> flip(X)[:, :, 0, 0]
+    array([[0.43194502, 0.83244264, 0.05808361, 0.37454012],
+           [0.03438852, 0.30461377, 0.60754485, 0.45606998],
+           [0.14092422, 0.38867729, 0.59789998, 0.54671028],
+           [0.11959425, 0.31098232, 0.35846573, 0.00552212],
+           [0.63340376, 0.22879817, 0.31435598, 0.52273283]])
+    >>> flip = Flip(probability=1.0, axis=[0, 1],
+    ...             random_state=42)
+    >>> flip(X)[:, :, 0, 0]
+    array([[0.52273283, 0.31435598, 0.22879817, 0.63340376],
+           [0.00552212, 0.35846573, 0.31098232, 0.11959425],
+           [0.54671028, 0.59789998, 0.38867729, 0.14092422],
+           [0.45606998, 0.60754485, 0.30461377, 0.03438852],
+           [0.37454012, 0.05808361, 0.83244264, 0.43194502]])
+    >>> flip = Flip(probability=[1.0, 1.0], axis=[1],
+    ...             random_state=42)  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+     ...
+    ValueError: Number of probabilities suppled does not match ...
+    >>> X[0, :, 0, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.37454012, 0.95071431],
+           [0.05808361, 0.86617615],
+           [0.83244264, 0.21233911],
+           [0.43194502, 0.29122914]])
+    >>> flip = Flip(probability=[1.0, 1.0], axis=[1, 3],
+    ...             random_state=42)  # doctest: +ELLIPSIS
+    >>> flip(X)[0, :, 0, :]
+    array([[0.43194502, 0.29122914],
+           [0.83244264, 0.21233911],
+           [0.05808361, 0.86617615],
+           [0.37454012, 0.95071431]])
+    """
+    def __init__(self,
+                 probability=0.5,
+                 axis=None,
+                 data_format=None,
+                 random_state=None):
+
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
+
+        if axis is None:
+            if isinstance(probability, (float, int)):
+                self.axis = [1]
+            else:
+                self.axis = None
+        elif isinstance(axis, int):
+            self.axis = [axis]
+        elif isinstance(axis, (tuple, list)):
+            self.axis = [int(a) for a in axis]
+        else:
+            raise ValueError("The value of axis must be either None, int or "
+                             "list/tuple.")
+
+        if isinstance(probability, (float, int)):  # self.axis != None here
+            probability = [float(probability) for i in range(len(self.axis))]
+
+        elif isinstance(probability, (list, tuple)):
+            if self.axis is None:
+                probability = [float(probability[i])
+                               for i in range(len(probability))]
+                self.axis = [i for i in range(len(probability))]
+            else:
+                if len(probability) != len(self.axis):
+                    raise ValueError("Number of probabilities suppled does "
+                                     "not match the number of axes.")
+                else:
+                    probability = [float(probability[i])
+                                   for i in range(len(probability))]
+        # Normalise
+        for i in range(len(probability)):
+            probability[i] = max(0.0, min(float(probability[i]), 1.0))
+        self.probability = probability
+
+        if self.data_format == "channels_last":
+            self._axis_offset = 0
+        else:  # data_format == "channels_first":
+            self._axis_offset = 1
+
+    def __call__(self, inputs):
+
+        outputs = inputs
+        for i in range(len(self.probability)):
+            p = self.probability[i]
+            a = self._axis_offset + self.axis[i]
+            if self.random_state.rand() < p:
+                outputs = np.flip(outputs, axis=a)
+
+        return outputs
+
+
+class Resize(BaseAugmentation):
     """Resizes an image.
 
     Parameters
@@ -123,9 +330,11 @@ class ImageResize(BaseAugmentation):
         Default is 1, i.e. bi-linear interpolation.
 
     anti_aliasing : bool, optional
-        Whether or not to apply a Gaussian filter to smooth the image prior to
+        Whether or not to apply a filter to smooth the image prior to
         down-scaling. When down-sampling the image, filtering helps to avoid
-        aliasing artifacts. Default is True, use anti-aliasing.
+        aliasing artifacts. When scikit-image is available, a Gaussian filter
+        is applied; otherwise, scipy applies a spline filter. Default is True,
+        use anti-aliasing.
 
     data_format : str, optional
         One of `channels_last` (default) or `channels_first`. The ordering of
@@ -136,38 +345,43 @@ class ImageResize(BaseAugmentation):
         file at `~/.keras/keras.json`. If you never set it, then it will be
         "channels_last".
 
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
     Examples
     --------
-    >>> from nethin.augmentation import ImageResize
+    >>> from nethin.augmentation import Resize
     >>> import numpy as np
     >>>
     >>> np.random.seed(42)
     >>> X = np.array([[1, 2],
     ...               [2, 3]])
-    >>> X = np.resize(X, [2, 2, 1])
+    >>> X = np.reshape(X, [2, 2, 1])
     >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[1, 2],
            [2, 3]])
-    >>> resize = ImageResize([4, 4], order=1, data_format="channels_last")
+    >>> resize = Resize([4, 4], order=1, data_format="channels_last")
     >>> Y = resize(X)
     >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 1.  ,  1.25,  1.75,  2.  ],
            [ 1.25,  1.5 ,  2.  ,  2.25],
            [ 1.75,  2.  ,  2.5 ,  2.75],
            [ 2.  ,  2.25,  2.75,  3.  ]])
-    >>> resize = ImageResize([2, 2], order=1, data_format="channels_last")
+    >>> resize = Resize([2, 2], order=1, data_format="channels_last")
     >>> X_ = resize(Y)
     >>> X_[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 1.25,  2.  ],
            [ 2.  ,  2.75]])
     >>>
     >>> X = np.array([[1, 2],
-    ...               [2, 3]])
-    >>> X = np.resize(X, [1, 2, 2])
+    ...               [2, 3]]).reshape((1, 2, 2))
     >>> X[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
     array([[1, 2],
            [2, 3]])
-    >>> resize = ImageResize([4, 4], order=1, data_format="channels_first")
+    >>> resize = Resize([4, 4], order=1, data_format="channels_first")
     >>> Y = resize(X)
     >>> Y[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 1.  ,  1.25,  1.75,  2.  ],
@@ -176,20 +390,62 @@ class ImageResize(BaseAugmentation):
            [ 2.  ,  2.25,  2.75,  3.  ]])
     >>>
     >>> X = np.random.rand(10, 20, 1)
-    >>> resize = ImageResize([5, 5], keep_aspect_ratio=False, order=1)
+    >>> resize = Resize([5, 5], keep_aspect_ratio=False, order=1)
     >>> Y = resize(X)
     >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
     (5, 5, 1)
-    >>> resize = ImageResize([5, 5], keep_aspect_ratio=True,
-    ...                      minimum_size=True, order=1)
+    >>> resize = Resize([5, 5], keep_aspect_ratio=True,
+    ...                 minimum_size=True, order=1)
     >>> Y = resize(X)
     >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
     (5, 10, 1)
-    >>> resize = ImageResize([5, 5], keep_aspect_ratio=True,
-    ...                      minimum_size=False, order=1)
+    >>> resize = Resize([5, 5], keep_aspect_ratio=True,
+    ...                 minimum_size=False, order=1)
     >>> Y = resize(X)
     >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
     (3, 5, 1)
+    >>>
+    >>> X = np.random.rand(10, 20, 30, 1)
+    >>> resize = Resize([5, 5, 5],
+    ...                 keep_aspect_ratio=True,
+    ...                 minimum_size=False,
+    ...                 order=1)
+    >>> Y = resize(X)
+    >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
+    (2, 3, 5, 1)
+    >>> resize = Resize([5, 5, 5],
+    ...                 keep_aspect_ratio=True,
+    ...                 minimum_size=True,
+    ...                 order=1)
+    >>> Y = resize(X)
+    >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
+    (5, 10, 15, 1)
+    >>> X = np.arange(27).reshape((3, 3, 3, 1))
+    >>> resize = Resize([5, 5, 5],
+    ...                 keep_aspect_ratio=True)
+    >>> Y = resize(X)
+    >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
+    (5, 5, 5, 1)
+    >>> X[:5, :5, 0, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0,  3,  6],
+           [ 9, 12, 15],
+           [18, 21, 24]])
+    >>> Y[:5, :5, 0, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0. ,  1.2,  3. ,  4.8,  6. ],
+           [ 3.6,  4.8,  6.6,  8.4,  9.6],
+           [ 9. , 10.2, 12. , 13.8, 15. ],
+           [14.4, 15.6, 17.4, 19.2, 20.4],
+           [18. , 19.2, 21. , 22.8, 24. ]])
+    >>> X[0, :5, :5, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 1, 2],
+           [3, 4, 5],
+           [6, 7, 8]])
+    >>> Y[0, :5, :5, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0. , 0.4, 1. , 1.6, 2. ],
+           [1.2, 1.6, 2.2, 2.8, 3.2],
+           [3. , 3.4, 4. , 4.6, 5. ],
+           [4.8, 5.2, 5.8, 6.4, 6.8],
+           [6. , 6.4, 7. , 7.6, 8. ]])
     """
     def __init__(self,
                  size,
@@ -201,17 +457,27 @@ class ImageResize(BaseAugmentation):
                  data_format=None,
                  random_state=None):
 
-        super(ImageResize, self).__init__(data_format=data_format,
-                                          random_state=random_state)
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
 
         self.size = [max(1, int(size[i])) for i in range(len(list(size)))]
 
+        if not _HAS_SKIMAGE:
+            raise warnings.warn("scikit-image (skimage) is not available. "
+                                "Will use scipy.ndimage.zoom instead. The "
+                                "result may differ.")
+
         if isinstance(random_size, int):
             self.random_size = max(0, int(random_size))
-        else:
+        elif isinstance(random_size, (list, tuple)):
             self.random_size = [max(0, int(random_size[i]))
                                 for i in range(len(list(random_size)))]
-            assert(len(self.random_size) == len(self.size))
+            if len(self.random_size) != len(self.size):
+                raise ValueError("random_size and size must have the same "
+                                 "lengths.")
+        else:
+            raise ValueError("random_size must be an int, or a list/tuple of "
+                             "int.")
 
         self.keep_aspect_ratio = bool(keep_aspect_ratio)
         self.minimum_size = bool(minimum_size)
@@ -229,55 +495,91 @@ class ImageResize(BaseAugmentation):
 
     def __call__(self, inputs):
 
+        shape = inputs.shape
+        if self.data_format == "channels_last":
+            shape = shape[:-1]
+        else:  # self.data_format == "channels_first"
+            shape = shape[1:]
+        ndim = len(shape)  # inputs.ndim - 1
+
         size_ = [0] * len(self.size)
+        if len(size_) < ndim:
+            size_.extend(shape[len(size_):ndim])  # Add dims from the data
+        elif len(size_) > ndim:
+            raise ValueError("The given size specifies more dimensions than "
+                             "what is present in the data.")
+
         if isinstance(self.random_size, int):
             random_size = np.random.randint(0, self.random_size + 1)
-            for i in range(len(self.size)):
+            for i in range(len(self.size)):  # Recall: May be fewer than ndim
                 size_[i] = self.size[i] + random_size
-        else:
-            for i in range(len(self.size)):
+        else:  # List or tuple
+            for i in range(len(self.size)):  # Recall: May be fewer than ndim
                 random_size = np.random.randint(0, self.random_size[i] + 1)
                 size_[i] = self.size[i] + random_size
 
         if self.keep_aspect_ratio:
-            im_size = inputs.shape[self._axis_offset:2 + self._axis_offset]
-            factors = [float(im_size[0]) / float(size_[0]),
-                       float(im_size[1]) / float(size_[1])]
-            factor = min(factors) if self.minimum_size else max(factors)
-            new_size = list(im_size[:])
-            new_size[0] = int((new_size[0] / factor) + 0.5)
-            new_size[1] = int((new_size[1] / factor) + 0.5)
+            if self.minimum_size:
+                val_i = np.argmin(shape)
+            else:
+                val_i = np.argmax(shape)
+            factor = size_[val_i] / shape[val_i]
+
+            new_size = [int((shape[i] * factor) + 0.5)
+                        for i in range(len(shape))]
+            new_factor = [new_size[i] / shape[i] for i in range(len(shape))]
         else:
             new_size = size_
-
-        aa = self.anti_aliasing
+            new_factor = [size_[i] / shape[i] for i in range(len(shape))]
 
         if self.data_format == "channels_last":
-            num_channels = inputs.shape[2]
-            outputs = np.zeros(new_size + [num_channels])
+            num_channels = inputs.shape[-1]
+            outputs = None  # np.zeros(new_size + [num_channels])
             for c in range(num_channels):
-                outputs[:, :, c] = transform.resize(inputs[:, :, c],
-                                                    new_size,
-                                                    order=self.order,
-                                                    mode="edge",  # TODO: Opt?
-                                                    clip=False,
-                                                    preserve_range=True,
-                                                    anti_aliasing=aa)
-            # outputs[:, :, c] = imresize(inputs[:, :, c], new_size,
-            #                             interp=self.method)
+                if _HAS_SKIMAGE:
+                    im = transform.resize(inputs[..., c],
+                                          new_size,
+                                          order=self.order,
+                                          mode="edge",  # TODO: Opt!
+                                          cval=0.0,  # TODO: Opt!
+                                          clip=False,
+                                          preserve_range=True,
+                                          anti_aliasing=self.anti_aliasing)
+                else:
+                    im = scipy.ndimage.zoom(inputs[..., c],
+                                            new_factor,
+                                            order=self.order,
+                                            # = "edge"
+                                            mode="nearest",  # TODO: Opt!
+                                            cval=0.0,  # TODO: Opt!
+                                            prefilter=self.anti_aliasing)
+                if outputs is None:
+                    outputs = np.zeros(list(im.shape) + [num_channels])
+                outputs[..., c] = im
+
         else:  # data_format == "channels_first":
             num_channels = inputs.shape[0]
-            outputs = np.zeros([num_channels] + new_size)
+            outputs = None
             for c in range(num_channels):
-                outputs[c, :, :] = transform.resize(inputs[c, :, :],
-                                                    new_size,
-                                                    order=self.order,
-                                                    mode="edge",  # TODO: Opt?
-                                                    clip=False,
-                                                    preserve_range=True,
-                                                    anti_aliasing=aa)
-                # outputs[c, :, :] = imresize(inputs[:, :, c], new_size,
-                #                             interp=self.method)
+                if _HAS_SKIMAGE:
+                    im = transform.resize(inputs[c, ...],
+                                          new_size,
+                                          order=self.order,
+                                          mode="edge",  # TODO: Opt?
+                                          clip=False,
+                                          preserve_range=True,
+                                          anti_aliasing=self.anti_aliasing)
+                else:
+                    im = scipy.ndimage.zoom(inputs[c, ...],
+                                            new_factor,
+                                            order=self.order,
+                                            # = "edge"
+                                            mode="nearest",  # TODO: Opt!
+                                            cval=0.0,  # TODO: Opt!
+                                            prefilter=self.anti_aliasing)
+                if outputs is None:
+                    outputs = np.zeros([num_channels] + list(im.shape))
+                outputs[c, ...] = im
 
         return outputs
 
@@ -448,119 +750,6 @@ class ImageCrop(BaseAugmentation):
             slices.append(slice(coord[i], coord[i] + crop[i]))
 
         outputs = inputs[tuple(slices)]
-
-        return outputs
-
-
-class ImageFlip(BaseAugmentation):
-    """Flips an image in any direction.
-
-    Parameters
-    ----------
-    probability : float or list of float
-        The probability of a flip. If a float, flip with probability
-        ``probability`` in the horizontal direction (second image dimension).
-        If a list, flip with ``probability[d]`` in the direction of dimension
-        ``d``. If fewer probabilities given than axes present, only the first
-        given axes will be considered. Default is 0.5, which means to flip with
-        probability ``0.5`` in the horizontal direction (along axis ``d=1``).
-
-    data_format : str, optional
-        One of `channels_last` (default) or `channels_first`. The ordering of
-        the dimensions in the inputs. `channels_last` corresponds to inputs
-        with shape `(batch, height, width, channels)` while `channels_first`
-        corresponds to inputs with shape `(batch, channels, height, width)`. It
-        defaults to the `image_data_format` value found in your Keras config
-        file at `~/.keras/keras.json`. If you never set it, then it will be
-        "channels_last".
-
-    random_state : int, float, array_like or numpy.random.RandomState, optional
-        A random state to use when sampling pseudo-random numbers. If int,
-        float or array_like, a new random state is created with the provided
-        value as seed. If None, the default numpy random state (np.random) is
-        used. Default is None, use the default numpy random state.
-
-    Examples
-    --------
-    >>> from nethin.augmentation import ImageFlip
-    >>> import numpy as np
-    >>> np.random.seed(42)
-    >>>
-    >>> X = np.random.rand(2, 3, 1)
-    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.37454012,  0.95071431,  0.73199394],
-           [ 0.59865848,  0.15601864,  0.15599452]])
-    >>> flip_h = ImageFlip(probability=1.0, random_state=42,
-    ...                    data_format="channels_last")
-    >>> flip_h(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.73199394,  0.95071431,  0.37454012],
-           [ 0.15599452,  0.15601864,  0.59865848]])
-    >>> flip_v = ImageFlip(probability=[1.0, 0.0], random_state=42,
-    ...                    data_format="channels_last")
-    >>> flip_v(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.59865848,  0.15601864,  0.15599452],
-           [ 0.37454012,  0.95071431,  0.73199394]])
-    >>> flip_hv = ImageFlip(probability=[0.5, 0.5], random_state=42,
-    ...                    data_format="channels_last")
-    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.59865848,  0.15601864,  0.15599452],
-           [ 0.37454012,  0.95071431,  0.73199394]])
-    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.37454012,  0.95071431,  0.73199394],
-           [ 0.59865848,  0.15601864,  0.15599452]])
-    >>> flip_hv(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.15599452,  0.15601864,  0.59865848],
-           [ 0.73199394,  0.95071431,  0.37454012]])
-    >>> np.random.seed(42)
-    >>> X = np.random.rand(2, 3, 1)
-    >>> flip = ImageFlip(probability=1.0, random_state=42)
-    >>> flip(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.73199394,  0.95071431,  0.37454012],
-           [ 0.15599452,  0.15601864,  0.59865848]])
-    >>> np.random.seed(42)
-    >>> X = np.random.rand(1, 2, 3)
-    >>> flip = ImageFlip(probability=1.0, random_state=42)
-    >>> flip(X)[:, :, 0]  # Wrong
-    ... # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.59865848,  0.37454012]])
-    >>> flip(X)[0, :, :]  # Wrong
-    ... # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.59865848,  0.15601864,  0.15599452],
-           [ 0.37454012,  0.95071431,  0.73199394]])
-    >>> flip = ImageFlip(probability=1.0, random_state=42,
-    ...                  data_format="channels_first")
-    >>> flip(X)[0, :, :]  # Right
-    ... # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.73199394,  0.95071431,  0.37454012],
-           [ 0.15599452,  0.15601864,  0.59865848]])
-    """
-    def __init__(self,
-                 probability=0.5,
-                 data_format=None,
-                 random_state=None):
-
-        super(ImageFlip, self).__init__(data_format=data_format,
-                                        random_state=random_state)
-
-        if not isinstance(probability, (list, tuple)):
-            probability = [0.0, probability]
-        probability = list(probability)
-        for i in range(len(probability)):
-            probability[i] = max(0.0, min(float(probability[i]), 1.0))
-        self.probability = probability
-
-        if self.data_format == "channels_last":
-            self._axis_offset = 0
-        else:  # data_format == "channels_first":
-            self._axis_offset = 1
-
-    def __call__(self, inputs):
-
-        outputs = inputs
-        for i in range(len(self.probability)):
-            p = self.probability[i]
-            if self.random_state.rand() < p:
-                outputs = np.flip(outputs, self._axis_offset + i)
 
         return outputs
 
@@ -1018,6 +1207,11 @@ class ImageTransform(BaseAugmentation):
             outputs = np.clip(outputs, self.min_value, self.max_value)
 
         return outputs
+
+
+# Deprecated names!
+ImageFlip = Flip
+ImageResize = Resize
 
 
 class Pipeline(object):

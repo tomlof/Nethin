@@ -26,8 +26,7 @@ except ImportError:
     from keras.backend.common import normalize_data_format
 
 __all__ = ["BaseAugmentation",
-           "Flip",
-           "ImageResize", "ImageCrop",
+           "Flip", "Resize", "Rotate", "Crop",
            "ImageHistogramShift", "ImageHistogramScale",
            "ImageHistogramAffineTransform", "ImageHistogramTransform",
            "ImageTransform",
@@ -875,17 +874,18 @@ class Rotate(BaseAugmentation):
         return outputs
 
 
-class ImageCrop(BaseAugmentation):
+class Crop(BaseAugmentation):
     """Crops an image.
 
     Parameters
     ----------
-    crop : list of int
-        A subimage size to crop from the image. If any images are smaller than
-        crop in any direction, no cropping will be performed in that direction.
+    crop : int, or list/tuple of int
+        A subimage size to crop from the image. If a single int, use the same
+        crop size for all dimensions. If an image is smaller than crop in any
+        direction, no cropping will be performed in that direction.
 
-    crop_random : bool, optional
-        Whether or not to select a random crop position, or the middle portion
+    random : bool, optional
+        Whether to select a random crop position, or to crop the middle portion
         of the image when cropping. Default is True, select a random crop.
 
     data_format : str, optional
@@ -905,7 +905,7 @@ class ImageCrop(BaseAugmentation):
 
     Examples
     --------
-    >>> from nethin.augmentation import ImageCrop
+    >>> from nethin.augmentation import Crop
     >>> import numpy as np
     >>>
     >>> np.random.seed(42)
@@ -915,11 +915,11 @@ class ImageCrop(BaseAugmentation):
            [ 0.15601864,  0.15599452,  0.05808361,  0.86617615],
            [ 0.60111501,  0.70807258,  0.02058449,  0.96990985],
            [ 0.83244264,  0.21233911,  0.18182497,  0.18340451]])
-    >>> crop = ImageCrop([2, 2], crop_random=True)
+    >>> crop = Crop([2, 2], random=False)
     >>> crop(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 0.15599452,  0.05808361],
            [ 0.70807258,  0.02058449]])
-    >>> crop = ImageCrop([2, 2], crop_center=False)
+    >>> crop = Crop([2, 2], random=True)
     >>> crop(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 0.15599452,  0.05808361],
            [ 0.70807258,  0.02058449]])
@@ -936,11 +936,11 @@ class ImageCrop(BaseAugmentation):
     array([[ 0.37454012,  0.95071431,  0.73199394],
            [ 0.59865848,  0.15601864,  0.15599452],
            [ 0.05808361,  0.86617615,  0.60111501]])
-    >>> crop = ImageCrop([2, 2], crop_center=True)
+    >>> crop = Crop([2, 2], random=False)
     >>> crop(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0.37454012,  0.95071431],
-           [ 0.59865848,  0.15601864]])
-    >>> crop = ImageCrop([2, 2], crop_center=False)
+    array([[0.15601864, 0.15599452],
+           [0.86617615, 0.60111501]])
+    >>> crop = Crop([2, 2], random=True)
     >>> crop(X)[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 0.59865848,  0.15601864],
            [ 0.05808361,  0.86617615]])
@@ -952,8 +952,8 @@ class ImageCrop(BaseAugmentation):
            [ 0.86617615,  0.60111501]])
     >>>
     >>> np.random.seed(42)
-    >>> X = np.random.rand(3, 3, 3)
-    >>> X  # doctest: +NORMALIZE_WHITESPACE
+    >>> X = np.random.rand(3, 3, 3, 1)
+    >>> X[:, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[[ 0.37454012,  0.95071431,  0.73199394],
             [ 0.59865848,  0.15601864,  0.15599452],
             [ 0.05808361,  0.86617615,  0.60111501]],
@@ -963,53 +963,76 @@ class ImageCrop(BaseAugmentation):
            [[ 0.43194502,  0.29122914,  0.61185289],
             [ 0.13949386,  0.29214465,  0.36636184],
             [ 0.45606998,  0.78517596,  0.19967378]]])
-    >>> crop = ImageCrop([2, 2], crop_center=True)
+    >>> crop = Crop([2, 2, 2], random=False)
     >>> crop(X)  # doctest: +NORMALIZE_WHITESPACE
-    array([[[ 0.37454012,  0.95071431,  0.73199394],
-            [ 0.59865848,  0.15601864,  0.15599452]],
-           [[ 0.70807258,  0.02058449,  0.96990985],
-            [ 0.83244264,  0.21233911,  0.18182497]]])
-    >>> crop = ImageCrop([2, 2], crop_center=False)
+    array([[[[0.21233911],
+             [0.18182497]],
+            [[0.30424224],
+             [0.52475643]]],
+           [[[0.29214465],
+             [0.36636184]],
+            [[0.78517596],
+             [0.19967378]]]])
+    >>> crop = Crop([2, 2, 2], random=True)
     >>> crop(X)  # doctest: +NORMALIZE_WHITESPACE
-    array([[[ 0.59865848,  0.15601864,  0.15599452],
-            [ 0.05808361,  0.86617615,  0.60111501]],
-           [[ 0.83244264,  0.21233911,  0.18182497],
-            [ 0.18340451,  0.30424224,  0.52475643]]])
-    >>> crop = ImageCrop([2, 2], crop_center=True, data_format="channels_last")
+    array([[[[0.37454012],
+             [0.95071431]],
+            [[0.59865848],
+             [0.15601864]]],
+           [[[0.70807258],
+             [0.02058449]],
+            [[0.83244264],
+             [0.21233911]]]])
+    >>> crop = Crop([2, 2, 2], random=False, data_format="channels_last")
     >>> crop(X)  # doctest: +NORMALIZE_WHITESPACE
-    array([[[ 0.37454012,  0.95071431,  0.73199394],
-            [ 0.59865848,  0.15601864,  0.15599452]],
-           [[ 0.70807258,  0.02058449,  0.96990985],
-            [ 0.83244264,  0.21233911,  0.18182497]]])
-    >>> np.all(crop(X) == X[0:2, 0:2, :])
+    array([[[[0.21233911],
+             [0.18182497]],
+            [[0.30424224],
+             [0.52475643]]],
+           [[[0.29214465],
+             [0.36636184]],
+            [[0.78517596],
+             [0.19967378]]]])
+    >>> np.all(crop(X) == X[1:3, 1:3, 1:3, :])
     True
-    >>> crop(X).shape == X[0:2, 0:2, :].shape
+    >>> crop(X).shape == X[1:3, 1:3, 1:3, :].shape
     True
-    >>> crop = ImageCrop([2, 2], crop_center=True,
-    ...                  data_format="channels_first")
+    >>> crop = Crop([2, 2, 2], random=False, data_format="channels_first")
     >>> crop(X)  # doctest: +NORMALIZE_WHITESPACE
-    array([[[ 0.37454012,  0.95071431],
-            [ 0.59865848,  0.15601864]],
-           [[ 0.70807258,  0.02058449],
-            [ 0.83244264,  0.21233911]],
-           [[ 0.43194502,  0.29122914],
-            [ 0.13949386,  0.29214465]]])
-    >>> np.all(crop(X) == X[:, 0:2, 0:2])
+    array([[[[0.15601864],
+             [0.15599452]],
+            [[0.86617615],
+             [0.60111501]]],
+           [[[0.21233911],
+             [0.18182497]],
+            [[0.30424224],
+             [0.52475643]]],
+           [[[0.29214465],
+             [0.36636184]],
+            [[0.78517596],
+             [0.19967378]]]])
+    >>> np.all(crop(X) == X[:, 1:3, 1:3, 1:3])
     True
-    >>> crop(X).shape == X[:, 0:2, 0:2].shape
+    >>> crop(X).shape == X[:, 1:3, 1:3, :].shape
     True
     """
     def __init__(self,
                  crop,
-                 crop_random=True,
+                 random=True,
                  data_format=None,
                  random_state=None):
 
-        super(ImageCrop, self).__init__(data_format=data_format,
-                                        random_state=random_state)
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
 
-        self.crop = [max(0, int(crop[i])) for i in range(len(list(crop)))]
-        self.crop_random = bool(crop_random)
+        if isinstance(crop, (int, float)):
+            self.crop = int(crop)
+        elif isinstance(crop, (list, tuple)):
+            self.crop = [max(0, int(crop[i])) for i in range(len(crop))]
+        else:
+            raise ValueError("crop must be an int, or a list/tuple of ints.")
+
+        self.random = bool(random)
 
         # Not checked in base class
         assert(hasattr(self.random_state, "randint"))
@@ -1021,24 +1044,35 @@ class ImageCrop(BaseAugmentation):
 
     def __call__(self, inputs):
 
-        crop = [None] * len(self.crop)
-        for i in range(len(self.crop)):
-            crop[i] = min(inputs.shape[self._axis_offset + i], self.crop[i])
+        ndim = inputs.ndim - 1  # Channel dimension excluded
 
-        coord = [None] * len(self.crop)
+        if isinstance(self.crop, int):
+            crop = [self.crop] * ndim
+        else:
+            crop = self.crop
+
+        if len(crop) != ndim:
+            warnings.warn("The provided number of crop sizes (%d) does not "
+                          "match the required number of crop sizes (%d). The "
+                          "result may suffer."
+                          % (len(crop), ndim))
+
+        for i in range(len(crop)):
+            crop[i] = min(inputs.shape[self._axis_offset + i], crop[i])
+
         slices = []
         if self._axis_offset > 0:
             slices.append(slice(None))
-        for i in range(len(self.crop)):
-            if self.crop_random:
-                coord[i] = int(round((inputs.shape[self._axis_offset + i] / 2)
-                                     - (crop[i] / 2)) + 0.5)
+        for i in range(len(crop)):
+            if not self.random:
+                coord = int(((inputs.shape[self._axis_offset + i] / 2)
+                             - (crop[i] / 2)) + 0.5)
             else:
-                coord[i] = self.random_state.randint(
+                coord = self.random_state.randint(
                     0,
                     max(1, inputs.shape[self._axis_offset + i] - crop[i] + 1))
 
-            slices.append(slice(coord[i], coord[i] + crop[i]))
+            slices.append(slice(coord, coord + crop[i]))
 
         outputs = inputs[tuple(slices)]
 
@@ -1503,6 +1537,7 @@ class ImageTransform(BaseAugmentation):
 # Deprecated names!
 ImageFlip = Flip
 ImageResize = Resize
+ImageCrop = Crop
 
 
 class Pipeline(object):

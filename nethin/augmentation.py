@@ -11,16 +11,14 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 import abc
 import warnings
 
-from six import with_metaclass
-
 import numpy as np
+import scipy.ndimage
+
 try:
     import skimage.transform as transform
     _HAS_SKIMAGE = True
 except (ImportError):
     _HAS_SKIMAGE = False
-
-    import scipy.ndimage
 
 try:
     from keras.utils.conv_utils import normalize_data_format
@@ -488,11 +486,6 @@ class Resize(BaseAugmentation):
 
         self.anti_aliasing = bool(anti_aliasing)
 
-        if self.data_format == "channels_last":
-            self._axis_offset = 0
-        else:  # data_format == "channels_first":
-            self._axis_offset = 1
-
     def __call__(self, inputs):
 
         shape = inputs.shape
@@ -580,6 +573,304 @@ class Resize(BaseAugmentation):
                 if outputs is None:
                     outputs = np.zeros([num_channels] + list(im.shape))
                 outputs[c, ...] = im
+
+        return outputs
+
+
+class Rotate(BaseAugmentation):
+    """Rotates an image about all standard planes (pairwise standard basis
+    vectors).
+
+    The general rotation of the ndimage is implemented as a series of plane
+    rotations as
+
+        ``R(I) = R_{n-1, n}(... R_{0, 2}(R_{0, 1}(I))...),``
+
+    for ``I`` and ``n``-dimensional image, where ``R`` is the total rotation,
+    and ``R_{i, j}`` is a rotation in the plane defined by axes ``i`` and
+    ``j``.
+
+    Hence, a 2-dimensional image will be rotated in the plane defined by the
+    axes ``(0, 1)`` (i.e., the image plane), and a 3-dimensional image with
+    axes ``(0, 1, 2)`` will be rotated first in the plane defined by ``(0,
+    1)``, then in the plane defined by ``(0, 2)``, and finally in the plane
+    defined by ``(1, 2)``.
+
+    The order in which the rotations are applied by this class are
+    well-defined, but does not commute for dimensions higher than two.
+    Rotations in 2-dimensional spatial dimensions, i.e. in ``R^2``, will work
+    precisely as expected, and be identical to the expected rotation.
+
+    More information can be found e.g. here:
+
+        http://www.euclideanspace.com/maths/geometry/rotations/theory/nDimensions/index.htm
+
+    Parameters
+    ----------
+    angles : float, or list/tuple of float
+        The rotation angles in degrees. If a single float, rotates all axes by
+        this number of degrees. If a list/tuple, rotates the corresponding
+        planes by this many degrees. The planes are rotated in the order
+        defined by the pairwise axes in increasing indices like ``(0, 1), ...,
+        (0, n), ..., (1, 2), ..., (n - 1, n)`` and should thus be of length ``n
+        * (n - 1) / 2`` where ``n`` is the number of dimensions in the image.
+
+    reshape : bool, optional
+        If True, the output image is reshapes such that the input image is
+        contained completely in the output image. Default is True.
+
+    order : int, optional
+        Integer in [0, 5], the order of the spline used in the interpolation.
+        The order corresponds to the following interpolations:
+
+            0: Nearest-neighbor
+            1: Bi-linear (default)
+            2: Bi-quadratic
+            3: Bi-cubic
+            4: Bi-quartic
+            5: Bi-quintic
+
+        Beware! Higher orders than 1 may cause the values to be outside of the
+        allowed range of values for your data. This must be handled manually.
+
+        Default is 1, i.e. bi-linear interpolation.
+
+    prefilter : bool, optional
+        Whether or not to prefilter the input array with a spline filter before
+        interpolation. Default is True.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
+    Examples
+    --------
+    >>> from nethin.augmentation import Rotate
+    >>> import numpy as np
+    >>>
+    >>> X = np.zeros((5, 5, 1))
+    >>> X[1:-1, 1:-1] = 1
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> rotate = Rotate(45, order=1, data_format="channels_last")
+    >>> Y = rotate(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0.34314575, 1., 1., 1., 0.34314575, 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> X = X.reshape((1, 5, 5))
+    >>> X[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> rotate = Rotate(25, order=1, data_format="channels_first")
+    >>> Y = rotate(X)
+    >>> Y[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 0.18738443, 0.15155864, 0., 0.],
+           [0., 0.15155864, 0.67107395, 1., 0.67107395, 0., 0.],
+           [0., 0.18738443, 1., 1., 1., 0.18738443, 0.],
+           [0., 0., 0.67107395, 1., 0.67107395, 0.15155864, 0.],
+           [0., 0., 0.15155864, 0.18738443, 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> rotate = Rotate(-25, order=1, data_format="channels_first")
+    >>> Y = rotate(X)
+    >>> Y[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0.15155864, 0.18738443, 0., 0., 0.],
+           [0., 0., 0.67107395, 1., 0.67107395, 0.15155864, 0.],
+           [0., 0.18738443, 1., 1., 1., 0.18738443, 0.],
+           [0., 0.15155864, 0.67107395, 1., 0.67107395, 0., 0.],
+           [0., 0., 0., 0.18738443, 0.15155864, 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>>
+    >>> X = np.zeros((5, 5, 5, 1))
+    >>> X[1:-1, 1:-1, 1:-1] = 1
+    >>> X[:, :, 1, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> rotate = Rotate([45, 0, 0], order=1, data_format="channels_last")
+    >>> Y = rotate(X)
+    >>> Y[:, :, 2, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0.34314575, 1., 1., 1., 0.34314575, 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> Y[:, 2, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 1.        , 1.        , 1.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ]])
+    >>> Y[2, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 1.        , 1.        , 1.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ]])
+    >>> rotate = Rotate([0, 45, 0], order=1, data_format="channels_last")
+    >>> Y = rotate(X)
+    >>> Y[:, :, 2, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 1.        , 1.        , 1.        , 0.        ],
+           [0.        , 0.58578644, 0.58578644, 0.58578644, 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.        , 0.        , 0.        ]])
+    >>> Y[:, 2, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0.34314575, 1., 1., 1., 0.34314575, 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> Y[2, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> rotate = Rotate([0, 0, 45], order=1, data_format="channels_last")
+    >>> Y = rotate(X)
+    >>> Y[:, :, 2, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> Y[:, 2, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    >>> Y[2, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0.34314575, 1., 1., 1., 0.34314575, 0.],
+           [0., 0., 0.58578644, 1., 0.58578644, 0., 0.],
+           [0., 0., 0., 0.34314575, 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0.]])
+    """
+    def __init__(self,
+                 angles,
+                 reshape=True,
+                 order=1,
+                 prefilter=True,
+                 data_format=None,
+                 random_state=None):
+
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
+
+        if isinstance(angles, (int, float)):
+            self.angles = float(angles)
+        elif isinstance(angles, (list, tuple)):
+            self.angles = [float(angles[i]) for i in range(len(angles))]
+        else:
+            raise ValueError("angles must be a float, or a list of floats.")
+
+        self.reshape = bool(reshape)
+
+        if int(order) not in [0, 1, 2, 3, 4, 5]:
+            raise ValueError('``order`` must be in [0, 5].')
+        self.order = int(order)
+
+        self.prefilter = bool(prefilter)
+
+    def __call__(self, inputs):
+
+        n = inputs.ndim - 1  # Channel dimension excluded
+        nn2 = n * (n-1) // 2
+
+        if isinstance(self.angles, float):
+            angles = [self.angles] * nn2
+        else:
+            angles = self.angles
+
+        if len(angles) != nn2:
+            warnings.warn("The number of provided angles (%d) does not match "
+                          "the required number of angles (n * (n - 1) / 2 = "
+                          "%d). The result may suffer."
+                          % (len(angles), nn2))
+
+        if self.data_format == "channels_last":
+            num_channels = inputs.shape[-1]
+        else:  # data_format == "channels_first":
+            num_channels = inputs.shape[0]
+
+        # c = 0
+        for c in range(num_channels):
+            plane_i = 0
+            # i = 0
+            for i in range(n - 1):
+                # j = 1
+                for j in range(i + 1, n):
+                    if plane_i < len(angles):  # Only rotate if specified
+                        outputs = None
+
+                        if self.data_format == "channels_last":
+                            inputs_ = inputs[..., c]
+                        else:  # data_format == "channels_first":
+                            inputs_ = inputs[c, ...]
+
+                        im = scipy.ndimage.rotate(inputs_,
+                                                  angles[plane_i],
+                                                  axes=(i, j),
+                                                  reshape=self.reshape,
+                                                  output=None,
+                                                  order=self.order,
+                                                  mode="nearest",  # TODO: Opt!
+                                                  cval=0.0,  # TODO: Opt!
+                                                  prefilter=self.prefilter)
+                        plane_i += 1
+
+                        if self.data_format == "channels_last":
+                            if outputs is None:
+                                outputs = np.zeros(
+                                        list(im.shape) + [num_channels])
+                            outputs[..., c] = im
+                        else:  # data_format == "channels_first":
+                            if outputs is None:
+                                outputs = np.zeros(
+                                        [num_channels] + list(im.shape))
+                            outputs[c, ...] = im
+
+                        inputs = outputs  # Next pair of axes will use output
 
         return outputs
 

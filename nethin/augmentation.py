@@ -26,7 +26,7 @@ except ImportError:
     from keras.backend.common import normalize_data_format
 
 __all__ = ["BaseAugmentation",
-           "Flip", "Resize", "Rotate", "Crop",
+           "Flip", "Resize", "Rotate", "Crop", "Shear",
            "ImageHistogramShift", "ImageHistogramScale",
            "ImageHistogramAffineTransform", "ImageHistogramTransform",
            "ImageTransform",
@@ -326,12 +326,36 @@ class Resize(BaseAugmentation):
 
         Default is 1, i.e. bi-linear interpolation.
 
-    anti_aliasing : bool, optional
-        Whether or not to apply a filter to smooth the image prior to
-        down-scaling. When down-sampling the image, filtering helps to avoid
-        aliasing artifacts. When scikit-image is available, a Gaussian filter
-        is applied; otherwise, scipy applies a spline filter. Default is True,
-        use anti-aliasing.
+    mode : {"reflect", "constant", "nearest", "mirror", "wrap"}, optional
+        Determines how the border should be handled. Default is "nearest".
+
+        The behavior for each option is:
+
+            "reflect": (d c b a | a b c d | d c b a)
+                The input is extended by reflecting about the edge of the last
+                pixel.
+
+            "constant": (k k k k | a b c d | k k k k)
+                The input is extended by filling all values beyond the edge
+                with the same constant value, defined by the cval parameter.
+
+            "nearest": (a a a a | a b c d | d d d d)
+                The input is extended by replicating the last pixel.
+
+            "mirror": (d c b | a b c d | c b a)
+                The input is extended by reflecting about the center of the
+                last pixel.
+
+            "wrap": (a b c d | a b c d | a b c d)
+                The input is extended by wrapping around to the opposite edge.
+
+    cval : float, optional
+        Value to fill past edges of input if mode is "constant". Default is
+        0.0.
+
+    prefilter : bool, optional
+        Whether or not to prefilter the input array with a spline filter before
+        interpolation. Default is True.
 
     data_format : str, optional
         One of `channels_last` (default) or `channels_first`. The ordering of
@@ -355,36 +379,36 @@ class Resize(BaseAugmentation):
     >>>
     >>> np.random.seed(42)
     >>> X = np.array([[1, 2],
-    ...               [2, 3]])
+    ...               [2, 3]]).astype(float)
     >>> X = np.reshape(X, [2, 2, 1])
     >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[1, 2],
-           [2, 3]])
+    array([[1., 2.],
+           [2., 3.]])
     >>> resize = Resize([4, 4], order=1, data_format="channels_last")
     >>> Y = resize(X)
     >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1.  ,  1.25,  1.75,  2.  ],
-           [ 1.25,  1.5 ,  2.  ,  2.25],
-           [ 1.75,  2.  ,  2.5 ,  2.75],
-           [ 2.  ,  2.25,  2.75,  3.  ]])
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
     >>> resize = Resize([2, 2], order=1, data_format="channels_last")
     >>> X_ = resize(Y)
     >>> X_[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1.25,  2.  ],
-           [ 2.  ,  2.75]])
+    array([[1., 2.],
+           [2., 3.]])
     >>>
     >>> X = np.array([[1, 2],
-    ...               [2, 3]]).reshape((1, 2, 2))
+    ...               [2, 3]]).reshape((1, 2, 2)).astype(float)
     >>> X[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
-    array([[1, 2],
-           [2, 3]])
+    array([[1., 2.],
+           [2., 3.]])
     >>> resize = Resize([4, 4], order=1, data_format="channels_first")
     >>> Y = resize(X)
     >>> Y[0, :, :]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1.  ,  1.25,  1.75,  2.  ],
-           [ 1.25,  1.5 ,  2.  ,  2.25],
-           [ 1.75,  2.  ,  2.5 ,  2.75],
-           [ 2.  ,  2.25,  2.75,  3.  ]])
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
     >>>
     >>> X = np.random.rand(10, 20, 1)
     >>> resize = Resize([5, 5], keep_aspect_ratio=False, order=1)
@@ -417,32 +441,32 @@ class Resize(BaseAugmentation):
     >>> Y = resize(X)
     >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
     (5, 10, 15, 1)
-    >>> X = np.arange(27).reshape((3, 3, 3, 1))
+    >>> X = np.arange(27).reshape((3, 3, 3, 1)).astype(float)
     >>> resize = Resize([5, 5, 5],
     ...                 keep_aspect_ratio=True)
     >>> Y = resize(X)
     >>> Y.shape  # doctest: +NORMALIZE_WHITESPACE
     (5, 5, 5, 1)
     >>> X[:5, :5, 0, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0,  3,  6],
-           [ 9, 12, 15],
-           [18, 21, 24]])
+    array([[ 0.,  3.,  6.],
+           [ 9., 12., 15.],
+           [18., 21., 24.]])
     >>> Y[:5, :5, 0, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 0. ,  1.2,  3. ,  4.8,  6. ],
-           [ 3.6,  4.8,  6.6,  8.4,  9.6],
-           [ 9. , 10.2, 12. , 13.8, 15. ],
-           [14.4, 15.6, 17.4, 19.2, 20.4],
-           [18. , 19.2, 21. , 22.8, 24. ]])
+    array([[ 0. ,  1.5,  3. ,  4.5,  6. ],
+           [ 4.5,  6. ,  7.5,  9. , 10.5],
+           [ 9. , 10.5, 12. , 13.5, 15. ],
+           [13.5, 15. , 16.5, 18. , 19.5],
+           [18. , 19.5, 21. , 22.5, 24. ]])
     >>> X[0, :5, :5, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[0, 1, 2],
-           [3, 4, 5],
-           [6, 7, 8]])
+    array([[0., 1., 2.],
+           [3., 4., 5.],
+           [6., 7., 8.]])
     >>> Y[0, :5, :5, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[0. , 0.4, 1. , 1.6, 2. ],
-           [1.2, 1.6, 2.2, 2.8, 3.2],
-           [3. , 3.4, 4. , 4.6, 5. ],
-           [4.8, 5.2, 5.8, 6.4, 6.8],
-           [6. , 6.4, 7. , 7.6, 8. ]])
+    array([[0. , 0.5, 1. , 1.5, 2. ],
+           [1.5, 2. , 2.5, 3. , 3.5],
+           [3. , 3.5, 4. , 4.5, 5. ],
+           [4.5, 5. , 5.5, 6. , 6.5],
+           [6. , 6.5, 7. , 7.5, 8. ]])
     """
     def __init__(self,
                  size,
@@ -450,7 +474,9 @@ class Resize(BaseAugmentation):
                  keep_aspect_ratio=False,
                  minimum_size=True,
                  order=1,
-                 anti_aliasing=False,  # TODO: Toggle when using skimage 0.15.
+                 mode="nearest",
+                 cval=0.0,
+                 prefilter=True,
                  data_format=None,
                  random_state=None):
 
@@ -458,11 +484,6 @@ class Resize(BaseAugmentation):
                          random_state=random_state)
 
         self.size = [max(1, int(size[i])) for i in range(len(list(size)))]
-
-        if not _HAS_SKIMAGE:
-            raise warnings.warn("scikit-image (skimage) is not available. "
-                                "Will use scipy.ndimage.zoom instead. The "
-                                "result may differ.")
 
         if isinstance(random_size, int):
             self.random_size = max(0, int(random_size))
@@ -483,7 +504,15 @@ class Resize(BaseAugmentation):
             raise ValueError('``order`` must be in [0, 5].')
         self.order = int(order)
 
-        self.anti_aliasing = bool(anti_aliasing)
+        if str(mode).lower() in {"reflect", "constant", "nearest", "mirror",
+                                 "wrap"}:
+            self.mode = str(mode).lower()
+        else:
+            raise ValueError('``mode`` must be one of "reflect", "constant", '
+                             '"nearest", "mirror", or "wrap".')
+
+        self.cval = float(cval)
+        self.prefilter = bool(prefilter)
 
     def __call__(self, inputs):
 
@@ -528,23 +557,13 @@ class Resize(BaseAugmentation):
             num_channels = inputs.shape[-1]
             outputs = None  # np.zeros(new_size + [num_channels])
             for c in range(num_channels):
-                if _HAS_SKIMAGE:
-                    im = transform.resize(inputs[..., c],
-                                          new_size,
-                                          order=self.order,
-                                          mode="edge",  # TODO: Opt!
-                                          cval=0.0,  # TODO: Opt!
-                                          clip=False,
-                                          preserve_range=True,
-                                          anti_aliasing=self.anti_aliasing)
-                else:
-                    im = scipy.ndimage.zoom(inputs[..., c],
-                                            new_factor,
-                                            order=self.order,
-                                            # = "edge"
-                                            mode="nearest",  # TODO: Opt!
-                                            cval=0.0,  # TODO: Opt!
-                                            prefilter=self.anti_aliasing)
+                im = scipy.ndimage.zoom(inputs[..., c],
+                                        new_factor,
+                                        order=self.order,
+                                        # = "edge"
+                                        mode=self.mode,
+                                        cval=self.cval,
+                                        prefilter=self.prefilter)
                 if outputs is None:
                     outputs = np.zeros(list(im.shape) + [num_channels])
                 outputs[..., c] = im
@@ -553,22 +572,12 @@ class Resize(BaseAugmentation):
             num_channels = inputs.shape[0]
             outputs = None
             for c in range(num_channels):
-                if _HAS_SKIMAGE:
-                    im = transform.resize(inputs[c, ...],
-                                          new_size,
-                                          order=self.order,
-                                          mode="edge",  # TODO: Opt?
-                                          clip=False,
-                                          preserve_range=True,
-                                          anti_aliasing=self.anti_aliasing)
-                else:
-                    im = scipy.ndimage.zoom(inputs[c, ...],
-                                            new_factor,
-                                            order=self.order,
-                                            # = "edge"
-                                            mode="nearest",  # TODO: Opt!
-                                            cval=0.0,  # TODO: Opt!
-                                            prefilter=self.anti_aliasing)
+                im = scipy.ndimage.zoom(inputs[c, ...],
+                                        new_factor,
+                                        order=self.order,
+                                        mode=self.mode,
+                                        cval=self.cval,
+                                        prefilter=self.prefilter)
                 if outputs is None:
                     outputs = np.zeros([num_channels] + list(im.shape))
                 outputs[c, ...] = im
@@ -633,6 +642,33 @@ class Rotate(BaseAugmentation):
         allowed range of values for your data. This must be handled manually.
 
         Default is 1, i.e. bi-linear interpolation.
+
+    mode : {"reflect", "constant", "nearest", "mirror", "wrap"}, optional
+        Determines how the border should be handled. Default is "nearest".
+
+        The behavior for each option is:
+
+            "reflect": (d c b a | a b c d | d c b a)
+                The input is extended by reflecting about the edge of the last
+                pixel.
+
+            "constant": (k k k k | a b c d | k k k k)
+                The input is extended by filling all values beyond the edge
+                with the same constant value, defined by the cval parameter.
+
+            "nearest": (a a a a | a b c d | d d d d)
+                The input is extended by replicating the last pixel.
+
+            "mirror": (d c b | a b c d | c b a)
+                The input is extended by reflecting about the center of the
+                last pixel.
+
+            "wrap": (a b c d | a b c d | a b c d)
+                The input is extended by wrapping around to the opposite edge.
+
+    cval : float, optional
+        Value to fill past edges of input if mode is "constant". Default is
+        0.0.
 
     prefilter : bool, optional
         Whether or not to prefilter the input array with a spline filter before
@@ -789,6 +825,8 @@ class Rotate(BaseAugmentation):
                  angles,
                  reshape=True,
                  order=1,
+                 mode="nearest",
+                 cval=0.0,
                  prefilter=True,
                  data_format=None,
                  random_state=None):
@@ -809,6 +847,14 @@ class Rotate(BaseAugmentation):
             raise ValueError('``order`` must be in [0, 5].')
         self.order = int(order)
 
+        if str(mode).lower() in {"reflect", "constant", "nearest", "mirror",
+                                 "wrap"}:
+            self.mode = str(mode).lower()
+        else:
+            raise ValueError('``mode`` must be one of "reflect", "constant", '
+                             '"nearest", "mirror", or "wrap".')
+
+        self.cval = float(cval)
         self.prefilter = bool(prefilter)
 
     def __call__(self, inputs):
@@ -853,8 +899,8 @@ class Rotate(BaseAugmentation):
                                                   reshape=self.reshape,
                                                   output=None,
                                                   order=self.order,
-                                                  mode="nearest",  # TODO: Opt!
-                                                  cval=0.0,  # TODO: Opt!
+                                                  mode=self.mode,
+                                                  cval=self.cval,
                                                   prefilter=self.prefilter)
                         plane_i += 1
 
@@ -1075,6 +1121,361 @@ class Crop(BaseAugmentation):
             slices.append(slice(coord, coord + crop[i]))
 
         outputs = inputs[tuple(slices)]
+
+        return outputs
+
+
+class Shear(BaseAugmentation):
+    """Shears an image.
+
+    Parameters
+    ----------
+    shear : float, or list/tuple of float
+        The angle in degrees to shear the image with. If a single float, use
+        the same shear for all specified axes, otherwise use ``shear[i]`` for
+        axis ``axes[i]``.
+
+    axes : tuple of int, or list/tuple of tuple of int
+        The first value of each tuple corresponds to the axis to shear parallel
+        to, and the second value of each tuple is the axis to shear. The length
+        of axes should be the same as the length of shear, or shear should be a
+        single float (meaning to shear all axes).
+
+    order : int, optional
+        Integer in [0, 5], the order of the spline used in the interpolation.
+        The order corresponds to the following interpolations:
+
+            0: Nearest-neighbor
+            1: Bi-linear (default)
+            2: Bi-quadratic
+            3: Bi-cubic
+            4: Bi-quartic
+            5: Bi-quintic
+
+        Beware! Higher orders than 1 may cause the values to be outside of the
+        allowed range of values for your data. This must be handled manually.
+
+        Default is 1, i.e. bi-linear interpolation.
+
+    mode : {"reflect", "constant", "nearest", "mirror", "wrap"}, optional
+        Determines how the border should be handled. Default is "nearest".
+
+        The behavior for each option is:
+
+            "reflect": (d c b a | a b c d | d c b a)
+                The input is extended by reflecting about the edge of the last
+                pixel.
+
+            "constant": (k k k k | a b c d | k k k k)
+                The input is extended by filling all values beyond the edge
+                with the same constant value, defined by the cval parameter.
+
+            "nearest": (a a a a | a b c d | d d d d)
+                The input is extended by replicating the last pixel.
+
+            "mirror": (d c b | a b c d | c b a)
+                The input is extended by reflecting about the center of the
+                last pixel.
+
+            "wrap": (a b c d | a b c d | a b c d)
+                The input is extended by wrapping around to the opposite edge.
+
+    cval : float, optional
+        Value to fill past edges of input if mode is "constant". Default is
+        0.0.
+
+    prefilter : bool, optional
+        Whether or not to prefilter the input array with a spline filter before
+        interpolation. Default is True.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
+    Examples
+    --------
+    >>> from nethin.augmentation import Shear
+    >>> import numpy as np
+    >>>
+    >>> X = np.zeros((5, 5, 1))
+    >>> X[1:-1, 1:-1] = 1
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> shear = Shear([-45], axes=(1, 0))
+    >>> (shear(X)[:, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 0, 1, 1, 1, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    >>> shear = Shear([45], axes=(1, 0))
+    >>> (shear(X)[:, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 0, 0],
+           [0, 0, 0, 1, 1, 1, 0, 0, 0],
+           [0, 0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    >>> shear = Shear([45], axes=(0, 1))
+    >>> (shear(X)[:, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0],
+           [0, 0, 0, 1, 0],
+           [0, 0, 1, 1, 0],
+           [0, 1, 1, 1, 0],
+           [0, 1, 1, 0, 0],
+           [0, 1, 0, 0, 0],
+           [0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0]])
+    >>>
+    >>> if False:  # Stress test
+    >>>     import matplotlib.pyplot as plt
+    >>>     s = 11
+    >>>     d = 11
+    >>>     ss = np.linspace(-np.pi / 3, np.pi / 3, d) * 180 / np.pi
+    >>>     plt.figure()
+    >>>     plot_i = 1
+    >>>     for s_i in range(s):
+    >>>         X = np.zeros((5 + s_i, 10, 1))
+    >>>         X[1:-1, 1:-1] = 1
+    >>>         for d_i in range(d):
+    >>>             plt.subplot(s, d, plot_i)
+    >>>             print(s_i + 1)
+    >>>             print(d_i + 1)
+    >>>             print(plot_i)
+    >>>             plot_i += 1
+    >>>             shear = Shear([ss[d_i]], axes=(1, 0))
+    >>>             plt.imshow(shear(X)[:, :, 0])
+    >>>
+    >>> X = np.zeros((5, 5, 5, 1))
+    >>> X[1:-1, 1:-1, 1:-1] = 1
+    >>> X[2, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> shear = Shear([45], axes=(1, 0))
+    >>> Y = shear(X)
+    >>> (Y[:, :, 2, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 0, 0],
+           [0, 0, 0, 1, 1, 1, 0, 0, 0],
+           [0, 0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, 3, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0],
+           [0, 1, 1, 1, 0],
+           [0, 1, 1, 1, 0],
+           [0, 0, 0, 0, 0]])
+    >>> shear = Shear([45], axes=(2, 1))
+    >>> Y = shear(X)
+    >>> (Y[2, :, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 0, 0],
+           [0, 0, 0, 1, 1, 1, 0, 0, 0],
+           [0, 0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 3, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0],
+           [0, 0, 1, 1, 0],
+           [0, 0, 1, 1, 0],
+           [0, 0, 1, 1, 0],
+           [0, 0, 0, 0, 0]])
+    >>>
+    >>> shear = Shear([30, 60], axes=[(1, 0), (2, 1)])
+    >>> Y = shear(X)
+    >>> (Y[:, :, 2, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 4, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 0],
+           [0, 0, 0, 0, 1, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 6, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 1, 1, 0, 0],
+           [0, 0, 0, 1, 1, 0, 0],
+           [0, 0, 0, 1, 1, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 8, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 1, 0, 0, 0],
+           [0, 0, 1, 1, 0, 0, 0],
+           [0, 0, 1, 1, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 10, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 1, 0, 0, 0, 0],
+           [0, 0, 1, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[:, :, 12, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0]])
+    >>> (Y[2, :, :, 0] + 0.5).astype(int)  # doctest: +NORMALIZE_WHITESPACE
+    array([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    """
+    def __init__(self,
+                 shear,
+                 axes,
+                 order=1,
+                 mode="nearest",
+                 cval=0.0,
+                 prefilter=True,
+                 data_format=None,
+                 random_state=None):
+
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
+
+        if isinstance(shear, (float, int)):
+            self.shear = float(shear)
+        elif isinstance(shear, (list, tuple)):
+            self.shear = [float(shear[i]) for i in range(len(shear))]
+        else:
+            raise ValueError("shear must be a flaot, or a list/tuple of "
+                             "floats.")
+
+        if isinstance(axes, (list, tuple)):
+            if isinstance(axes[0], (list, tuple)):
+                self.axes = [(int(a[0]), int(a[1])) for a in axes]
+            else:
+                self.axes = [axes]
+        else:
+            raise ValueError("axes should be a list/tuple of 2-tuples of ints")
+
+        if int(order) not in [0, 1, 2, 3, 4, 5]:
+            raise ValueError('``order`` must be in [0, 5].')
+        self.order = int(order)
+
+        if str(mode).lower() in {"reflect", "constant", "nearest", "mirror",
+                                 "wrap"}:
+            self.mode = str(mode).lower()
+        else:
+            raise ValueError('``mode`` must be one of "reflect", "constant", '
+                             '"nearest", "mirror", or "wrap".')
+
+        self.cval = float(cval)
+        self.prefilter = bool(prefilter)
+
+        if self.data_format == "channels_last":
+            self._axis_offset = 0
+        else:  # data_format == "channels_first":
+            self._axis_offset = 1
+
+    def __call__(self, inputs):
+
+        ndim = inputs.ndim - 1  # Channel dimension excluded
+
+        if isinstance(self.shear, float):
+            shear = [self.shear] * ndim
+        else:
+            shear = self.shear
+
+        if len(self.axes) != len(shear):
+            raise RuntimeError("The provided number of axes (%d) does not "
+                               "match the provided number of shear values "
+                               "(%d)." % (len(self.axes), len(shear)))
+
+        if self.data_format == "channels_last":
+            num_channels = inputs.shape[-1]
+        else:  # data_format == "channels_first":
+            num_channels = inputs.shape[0]
+
+        S = np.eye(ndim)
+        offset = [0.0] * ndim
+
+        if self.data_format == "channels_last":
+            output_shape = list(inputs.shape[:-1])
+        else:  # data_format == "channels_first":
+            output_shape = list(inputs.shape[1:])
+
+        # i = 0
+        for i in range(len(shear)):
+            idx0 = self.axes[i][0]
+            idx1 = self.axes[i][1]
+
+            # +-------+---+
+            # |       |  /|
+            # |   I   |_/ | h
+            # |       |/  |
+            # +-------+---+
+            #     w     b
+
+            s = shear[i]
+            h = float(output_shape[idx1] - 1)
+            b = h * np.tan(s * (np.pi / 180.0))
+
+            S_i = np.eye(ndim)
+            if abs(b) > 10.0 * np.finfo("float").eps:
+                S_i[idx0, idx1] = b / h
+            else:
+                S_i[idx0, idx1] = 0.0
+
+            output_shape[idx0] += int(abs(b) + 0.5)
+            if s > 0.0:
+                offset[idx0] -= b
+
+            S = np.dot(S, S_i)
+
+        if self.data_format == "channels_last":
+            outputs = np.zeros(output_shape + [num_channels])
+        else:  # data_format == "channels_first":
+            outputs = np.zeros([num_channels] + output_shape)
+
+        output_shape = tuple(output_shape)
+
+        c = 0
+        for c in range(num_channels):
+            if self.data_format == "channels_last":
+                inputs_ = inputs[..., c]
+            else:  # data_format == "channels_first":
+                inputs_ = inputs[c, ...]
+
+            im = scipy.ndimage.affine_transform(inputs_,
+                                                S,
+                                                offset=offset,
+                                                output_shape=output_shape,
+                                                output=None,
+                                                order=self.order,
+                                                mode=self.mode,
+                                                cval=self.cval,
+                                                prefilter=self.prefilter)
+
+            if self.data_format == "channels_last":
+                outputs[..., c] = im
+            else:  # data_format == "channels_first":
+                outputs[c, ...] = im
 
         return outputs
 
@@ -1437,8 +1838,9 @@ class ImageHistogramTransform(BaseAugmentation):
                  data_format=None,
                  random_state=None):
 
-        super(ImageHistogramTransform, self).__init__(data_format=data_format,
-                                                      random_state=random_state)
+        super(ImageHistogramTransform, self).__init__(
+                data_format=data_format,
+                random_state=random_state)
 
         if not callable(transform):
             raise ValueError('``transform`` must be callable.')

@@ -38,6 +38,7 @@ __all__ = ["Helper", "get_device_string", "with_device",
            "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
            "simple_bezier", "dynamic_histogram_warping",
+           "vector_median",
            "ExceedingThresholdException"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
@@ -1158,6 +1159,124 @@ def histogram_matching(A, B, return_cost=False, num_cost_interp=100):
         return matched_B, cost
     else:
         return matched_B
+
+
+# TODO: This function is really slow. Speed up!
+def vector_median(vf, window=1, order=2):
+    """Computes the vector median of an n-dimensional vector field.
+
+    Parameters
+    ----------
+    vf : ndarray
+        The vector field to smooth. It should have the shape ``(dim1, dim2, ...
+        dimn, n)``, where the first dimensions are the spatial dimensions of
+        the image, and the last dimension contains the vector dimensions.
+
+    window : int, optional
+        Positive integer. The vector median is computed in a window of size
+        ``2 * window + 1``.
+
+    order : {non-zero int, np.inf, -np.inf}, optional
+        Order of the norm (see numpy.linalg.norm for details). If ``order`` is
+        negative, you may encounter a RuntimeWarning message if there are
+        zero-differences among the vectors.
+
+    Examples
+    --------
+    >>> import nethin.utils as utils
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>>
+    >>> vf = np.random.rand(5, 5, 2)  # doctest: +NORMALIZE_WHITESPACE
+    >>> vf[..., 0]
+    array([[0.37454012, 0.73199394, 0.15601864, 0.05808361, 0.60111501],
+           [0.02058449, 0.83244264, 0.18182497, 0.30424224, 0.43194502],
+           [0.61185289, 0.29214465, 0.45606998, 0.19967378, 0.59241457],
+           [0.60754485, 0.06505159, 0.96563203, 0.30461377, 0.68423303],
+           [0.12203823, 0.03438852, 0.25877998, 0.31171108, 0.54671028]])
+    >>> new_vf = utils.vector_median(vf,
+    ...                              window=1,
+    ...                              order=1)  # doctest: +NORMALIZE_WHITESPACE
+    >>> new_vf[..., 0]
+    array([[0.37454012, 0.18182497, 0.30424224, 0.30424224, 0.30424224],
+           [0.29214465, 0.29214465, 0.30424224, 0.30424224, 0.30424224],
+           [0.29214465, 0.29214465, 0.30424224, 0.43194502, 0.43194502],
+           [0.12203823, 0.25877998, 0.25877998, 0.31171108, 0.54671028],
+           [0.12203823, 0.25877998, 0.25877998, 0.31171108, 0.54671028]])
+    >>> new_vf = utils.vector_median(vf,
+    ...                              window=1,
+    ...                              order=2)  # doctest: +NORMALIZE_WHITESPACE
+    >>> new_vf[..., 0]
+    array([[0.73199394, 0.18182497, 0.30424224, 0.30424224, 0.30424224],
+           [0.73199394, 0.29214465, 0.30424224, 0.30424224, 0.30424224],
+           [0.60754485, 0.29214465, 0.30424224, 0.43194502, 0.43194502],
+           [0.29214465, 0.25877998, 0.25877998, 0.31171108, 0.54671028],
+           [0.03438852, 0.25877998, 0.25877998, 0.31171108, 0.54671028]])
+    """
+    window = max(0, abs(int(window)))
+
+    if isinstance(order, int):
+        order = int(order)
+    elif isinstance(order, float) and (order not in {np.inf, -np.inf}):
+        order = int(order)
+    elif order not in {np.inf, -np.inf, "fro", "nuc"}:
+        raise ValueError("``order`` should be one of non-zero int, np.inf, "
+                         "-np.inf}.")
+
+    ndim = len(vf.shape) - 1
+
+    assert(ndim == vf.shape[-1])
+
+    grid = np.linspace(-window, window, 2 * window + 1)
+    mesh = np.meshgrid(*(grid for i in range(ndim)))
+    for i in range(len(mesh)):
+        mesh[i] = mesh[i][..., np.newaxis]
+    mesh = np.concatenate(mesh, axis=ndim)
+
+    shape = vf.shape[:-1]
+
+    slices = tuple([slice(None, None) for i in range(ndim)]
+                   + [0])
+    slices_w = tuple([slice(None, None) for i in range(mesh.ndim - 1)]
+                     + [0])
+
+    new_vf = np.zeros_like(vf)
+    for coord, _ in np.ndenumerate(vf[slices]):
+        m = np.array(coord)
+        vectors = []
+        for c, _ in np.ndenumerate(mesh[slices_w]):
+            d = mesh[c[0], c[1]]
+            md = m + d
+            inside = True
+            for i in range(md.shape[0]):
+                if md[i] < 0.0:
+                    inside = False
+                elif md[i] >= shape[0]:
+                    inside = False
+
+            if inside:
+                vectors.append(vf[tuple((md + 0.5).astype(int).tolist()
+                               + [slice(None)])])
+
+        assert(len(vectors) > 0)
+
+        min_d = np.inf
+        new_vector = vectors[0]
+        for v1_i in range(len(vectors)):
+            v1 = vectors[v1_i]
+            d_i = 0.0
+            for v2_i in range(len(vectors)):
+                v2 = vectors[v2_i]
+
+                d_i += np.linalg.norm(v1 - v2, ord=order)
+
+            if d_i < min_d:
+                new_vector = v1
+                min_d = d_i
+
+        new_vf[tuple(list(coord) + [slice(None)])] = new_vector
+
+    return new_vf
 
 
 class RangeType(object):

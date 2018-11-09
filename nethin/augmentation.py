@@ -624,7 +624,7 @@ class Rotate(BaseAugmentation):
         * (n - 1) / 2`` where ``n`` is the number of dimensions in the image.
 
     reshape : bool, optional
-        If True, the output image is reshapes such that the input image is
+        If True, the output image is reshaped such that the input image is
         contained completely in the output image. Default is True.
 
     order : int, optional
@@ -1363,7 +1363,7 @@ class Shear(BaseAugmentation):
         elif isinstance(shear, (list, tuple)):
             self.shear = [float(shear[i]) for i in range(len(shear))]
         else:
-            raise ValueError("shear must be a flaot, or a list/tuple of "
+            raise ValueError("shear must be a float, or a list/tuple of "
                              "floats.")
 
         if isinstance(axes, (list, tuple)):
@@ -1455,7 +1455,6 @@ class Shear(BaseAugmentation):
 
         output_shape = tuple(output_shape)
 
-        c = 0
         for c in range(num_channels):
             if self.data_format == "channels_last":
                 inputs_ = inputs[..., c]
@@ -1476,6 +1475,400 @@ class Shear(BaseAugmentation):
                 outputs[..., c] = im
             else:  # data_format == "channels_first":
                 outputs[c, ...] = im
+
+        return outputs
+
+
+class DistortionField(BaseAugmentation):
+    """Applies a vector field to an image to distort it.
+
+    Parameters
+    ----------
+    field : ndarray, optional
+        An ndarray of shape ``(*I.shape, I.ndim)``, where ``I`` is the input
+        image. Passing None is equal to passing ``np.zeros((*I.shape,
+        I.ndim))``, i.e. no vector field is added (unless there is a random
+        addition). Default is None.
+
+    random_size : float, optional
+        If ``random_size > 0``, then a new random vector field is added to the
+        provided field at each call, with the largest vector having 2-norm
+        ``random_size``. The amount is independent and uniform for all elements
+        and all dimensions. Default is 0.0, i.e. add no random vector field.
+
+    reshape : bool, optional
+        If True, the output image is reshaped such that the input image is
+        contained completely in the output image. Default is True.
+
+    order : int, optional
+        Integer in [0, 5], the order of the spline used in the interpolation.
+        The order corresponds to the following interpolations:
+
+            0: Nearest-neighbor
+            1: Bi-linear (default)
+            2: Bi-quadratic
+            3: Bi-cubic
+            4: Bi-quartic
+            5: Bi-quintic
+
+        Beware! Higher orders than 1 may cause the values to be outside of the
+        allowed range of values for your data. This must be handled manually.
+
+        Default is 1, i.e. bi-linear interpolation.
+
+    mode : {"reflect", "constant", "nearest", "wrap"}, optional
+        Determines how the border should be handled. Default is "nearest".
+
+        The behavior for each option is:
+
+            "reflect": (d c b a | a b c d | d c b a)
+                The input is extended by reflecting about the edge of the last
+                pixel.
+
+            "constant": (k k k k | a b c d | k k k k)
+                The input is extended by filling all values beyond the edge
+                with the same constant value, defined by the cval parameter.
+
+            "nearest": (a a a a | a b c d | d d d d)
+                The input is extended by replicating the last pixel.
+
+            "wrap": (a b c d | a b c d | a b c d)
+                The input is extended by wrapping around to the opposite edge.
+
+    cval : float, optional
+        Value to fill past edges of input if mode is "constant". Default is
+        0.0.
+
+    prefilter : bool, optional
+        Whether or not to prefilter the input array with a spline filter before
+        interpolation. Default is True.
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering of
+        the dimensions in the inputs. `channels_last` corresponds to inputs
+        with shape `(batch, height, width, channels)` while `channels_first`
+        corresponds to inputs with shape `(batch, channels, height, width)`. It
+        defaults to the `image_data_format` value found in your Keras config
+        file at `~/.keras/keras.json`. If you never set it, then it will be
+        "channels_last".
+
+    random_state : int, float, array_like or numpy.random.RandomState, optional
+        A random state to use when sampling pseudo-random numbers. If int,
+        float or array_like, a new random state is created with the provided
+        value as seed. If None, the default numpy random state (np.random) is
+        used. Default is None, use the default numpy random state.
+
+    Examples
+    --------
+    >>> from nethin.augmentation import DistortionField
+    >>> import nethin.utils as utils
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>>
+    >>> d = 5
+    >>> X = np.zeros((d, d, 1))
+    >>> for i in range(1, d, 2):
+    ...     X[i, 1:-1] = 1
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.],
+           [0., 1., 1., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> m = 1
+    >>> U = np.tile(np.linspace(-m, m, d).reshape(-1, 1), (1, d))[...,
+    ...                                                           np.newaxis]
+    >>> V = np.tile(np.linspace(-m, m, d), (d, 1))[..., np.newaxis]
+    >>> vf = np.concatenate([U, V], axis=2)
+    >>> vf[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[-1. , -1. , -1. , -1. , -1. ],
+           [-0.5, -0.5, -0.5, -0.5, -0.5],
+           [ 0. ,  0. ,  0. ,  0. ,  0. ],
+           [ 0.5,  0.5,  0.5,  0.5,  0.5],
+           [ 1. ,  1. ,  1. ,  1. ,  1. ]])
+    >>> vf[:, :, 1]  # doctest: +NORMALIZE_WHITESPACE
+    array([[-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ]])
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[1. , 1. , 1. , 1. , 1. ],
+           [0.5, 0.5, 0.5, 0.5, 0.5],
+           [0. , 0. , 0. , 0. , 0. ],
+           [0.5, 0.5, 0.5, 0.5, 0.5],
+           [1. , 1. , 1. , 1. , 1. ]])
+    >>>
+    >>> X = np.zeros((d, d, 1))
+    >>> for i in range(1, d, 2):
+    ...     X[1:-1, i] = 1
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ]])
+    >>>
+    >>> vx = -U / np.sqrt(V**2 + U**2 + 10**-16) * np.exp(-(V**2 + U**2))
+    >>> vy = V / np.sqrt(V**2 + U**2 + 10**-16) * np.exp(-(V**2 + U**2))
+    >>> vf = np.concatenate((vy, vx), axis=2)
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.        , 0.09529485, 0.        , 0.        , 0.        ],
+           [0.        , 0.57111806, 0.77880073, 0.32617587, 0.09529479],
+           [0.        , 1.        , 0.        , 1.        , 0.        ],
+           [0.09529483, 0.3261759 , 0.77880073, 0.57111812, 0.        ],
+           [0.        , 0.        , 0.        , 0.09529477, 0.        ]])
+    >>>
+    >>> V = np.tile(np.linspace(-m, m, d), (d, 1))[..., np.newaxis]
+    >>> U = np.zeros_like(V)
+    >>> vf = np.concatenate([U, V], axis=2)
+    >>> vf[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> vf[:, :, 1]  # doctest: +NORMALIZE_WHITESPACE
+    array([[-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ]])
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0. , 0. , 0. , 0. , 0. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [1. , 0.5, 0. , 0.5, 1. ],
+           [0. , 0. , 0. , 0. , 0. ]])
+    >>> U = np.tile(np.linspace(-m, m, d).reshape(-1, 1), (1, d))[...,
+    ...                                                           np.newaxis]
+    >>> V = np.zeros_like(U)
+    >>> vf = np.concatenate([U, V], axis=2)
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.],
+           [0., 1., 0., 1., 0.]])
+    >>>
+    >>> X = np.zeros((d, d, 1))
+    >>> X[d // 2, :] = 1
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.],
+           [1., 1., 1., 1., 1.],
+           [0., 0., 0., 0., 0.],
+           [0., 0., 0., 0., 0.]])
+    >>> vf[..., 0] = vf[..., 0].T
+    >>> vf[..., 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ],
+           [-1. , -0.5,  0. ,  0.5,  1. ]])
+    >>> distortion_field = DistortionField(vf)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0. , 0. , 0. , 0. , 0. ],
+           [0. , 0. , 0. , 0. , 0. ],
+           [1. , 0.5, 0. , 0. , 0. ],
+           [0. , 0.5, 1. , 0.5, 0. ],
+           [0. , 0. , 0. , 0.5, 1. ],
+           [0. , 0. , 0. , 0. , 0. ],
+           [0. , 0. , 0. , 0. , 0. ]])
+    >>> distortion_field = DistortionField(vf, reshape=False)
+    >>> Y = distortion_field(X)
+    >>> Y[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0. , 0. , 0. , 0. , 0. ],
+           [1. , 0.5, 0. , 0. , 0. ],
+           [0. , 0.5, 1. , 0.5, 0. ],
+           [0. , 0. , 0. , 0.5, 1. ],
+           [0. , 0. , 0. , 0. , 0. ]])
+    """
+    def __init__(self,
+                 field=None,
+                 random_size=0.0,
+                 reshape=True,
+                 order=1,
+                 mode="nearest",
+                 cval=0.0,
+                 prefilter=True,
+                 data_format=None,
+                 random_state=None):
+
+        super().__init__(data_format=data_format,
+                         random_state=random_state)
+
+        if field is None:
+            self.field = field
+        elif isinstance(field, np.ndarray):
+            self.field = field.astype(np.float32)
+        else:
+            raise ValueError("field should be a numpy.ndarray.")
+
+        if isinstance(random_size, (float, int)):
+            self.random_size = max(0.0, float(random_size))
+        else:
+            raise ValueError("random_size should be a float.")
+
+        self.reshape = bool(reshape)
+
+        if int(order) not in [0, 1, 2, 3, 4, 5]:
+            raise ValueError('``order`` must be in [0, 5].')
+        self.order = int(order)
+
+        # Note: No "mirror" in map_coordinates, so removed in this augmentor!
+        if str(mode).lower() in {"reflect", "constant", "nearest", "wrap"}:
+            self.mode = str(mode).lower()
+        else:
+            raise ValueError('``mode`` must be one of "reflect", "constant", '
+                             '"nearest", or "wrap".')
+
+        self.cval = float(cval)
+        self.prefilter = bool(prefilter)
+
+        if self.data_format == "channels_last":
+            self._axis_offset = 0
+        else:  # data_format == "channels_first":
+            self._axis_offset = 1
+
+    def __call__(self, inputs):
+
+        if self.data_format == "channels_last":
+            shape = inputs[..., 0].shape
+        else:
+            shape = inputs[0, ...].shape
+
+        if self.field is None:
+            field = None
+        else:
+            if self.field[..., 0].shape != shape:
+                raise RuntimeError("The shape of the provided vector field "
+                                   "(%s) does not match the shape of the "
+                                   "provided inputs (%s)."
+                                   % (str(self.field.shape), str(shape)))
+            if self.field.shape[-1] != len(shape):
+                raise RuntimeError("The dimension of the vector field (%s) "
+                                   "does not match the dimension of the "
+                                   "provided inputs (%s)."
+                                   % (str(self.field.shape[-1]),
+                                      str(len(shape))))
+
+            field = self.field
+
+        if self.random_size > 0.0:
+            random_field = np.random.rand(*shape)
+            max_norm = np.max(np.linalg.norm(random_field, axis=-1))
+            random_field *= (self.random_size / max_norm)
+
+            if field is None:
+                field = random_field
+            else:
+                field += random_field
+
+        if field is None:
+            outputs = inputs
+        else:
+            if self.data_format == "channels_last":
+                num_channels = inputs.shape[-1]
+            else:  # data_format == "channels_first":
+                num_channels = inputs.shape[0]
+
+            dims = [np.arange(d) for d in inputs.shape[:-1]]
+            coords = np.stack(np.meshgrid(*dims, indexing="ij"), axis=-1)
+            coords = coords.astype(field.dtype)
+            pad1 = [0.0] * coords.shape[-1]
+            pad2 = [0.0] * coords.shape[-1]
+                   # [float(coords.shape[d]) - 1.0
+                   #  for d in range(len(coords.shape) - 1)]
+            for d in range(coords.shape[-1]):
+                coords[..., d] -= field[..., d]
+
+                if True:#self.reshape:
+                    pad1[d] = max(pad1[d], -np.min(coords[..., d]))
+                    pad2[d] = max(pad2[d],
+                                  np.max(coords[..., d]) - coords.shape[d] + 1)
+
+            if self.reshape:
+
+                pad = [(int(b + 0.5), int(a + 0.5))
+                       for b, a in zip(pad1, pad2)] + [(0, 0)]
+
+                # pad_mode = "constant"
+                # pad_kwargs = dict(constant_values=0.0)
+                pad_mode = self.mode
+                if pad_mode == "nearest":
+                    pad_mode = "edge"  # Note: Different name in np.pad!
+                elif pad_mode == "reflect":
+                    pad_mode = "symmetric"  # Note: Different name in np.pad!
+
+                pad_kwargs = {}
+                if pad_mode == "constant":
+                    pad_kwargs = dict(constant_values=self.cval)
+
+                inputs = np.pad(inputs,
+                                pad,
+                                pad_mode,
+                                **pad_kwargs)
+
+                # TODO: We redo the coordinate computations. Better way?
+                dims = [np.arange(d) for d in inputs.shape[:-1]]
+                coords = np.stack(np.meshgrid(*dims, indexing="ij"), axis=-1)
+                coords = coords.astype(field.dtype)
+
+                field = np.pad(field,
+                                pad,
+                                "constant",
+                                constant_values=0.0)
+
+                for d in range(coords.shape[-1]):
+                    coords[..., d] -= field[..., d]
+
+            coords = [coords[..., i] for i in range(coords.shape[-1])]
+
+            outputs = None
+
+            # c = 0
+            for c in range(num_channels):
+                if self.data_format == "channels_last":
+                    inputs_ = inputs[..., c]
+                else:  # data_format == "channels_first":
+                    inputs_ = inputs[c, ...]
+
+                outputs_ = scipy.ndimage.map_coordinates(
+                        inputs_,
+                        coords,
+                        order=self.order,
+                        mode=self.mode,
+                        cval=self.cval,
+                        prefilter=self.prefilter)
+
+                if self.data_format == "channels_last":
+                    if outputs is None:
+                        outputs = np.zeros(
+                                list(outputs_.shape) + [num_channels])
+                    outputs[..., c] = outputs_
+                else:  # data_format == "channels_first":
+                    if outputs is None:
+                        outputs = np.zeros(
+                                [num_channels] + list(outputs_.shape))
+                    outputs[c, ...] = outputs_
 
         return outputs
 

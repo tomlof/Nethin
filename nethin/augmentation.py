@@ -1795,12 +1795,10 @@ class DistortionField(BaseAugmentation):
             coords = coords.astype(field.dtype)
             pad1 = [0.0] * coords.shape[-1]
             pad2 = [0.0] * coords.shape[-1]
-                   # [float(coords.shape[d]) - 1.0
-                   #  for d in range(len(coords.shape) - 1)]
             for d in range(coords.shape[-1]):
                 coords[..., d] -= field[..., d]
 
-                if True:#self.reshape:
+                if self.reshape:
                     pad1[d] = max(pad1[d], -np.min(coords[..., d]))
                     pad2[d] = max(pad2[d],
                                   np.max(coords[..., d]) - coords.shape[d] + 1)
@@ -1810,8 +1808,6 @@ class DistortionField(BaseAugmentation):
                 pad = [(int(b + 0.5), int(a + 0.5))
                        for b, a in zip(pad1, pad2)] + [(0, 0)]
 
-                # pad_mode = "constant"
-                # pad_kwargs = dict(constant_values=0.0)
                 pad_mode = self.mode
                 if pad_mode == "nearest":
                     pad_mode = "edge"  # Note: Different name in np.pad!
@@ -1833,9 +1829,9 @@ class DistortionField(BaseAugmentation):
                 coords = coords.astype(field.dtype)
 
                 field = np.pad(field,
-                                pad,
-                                "constant",
-                                constant_values=0.0)
+                               pad,
+                               "constant",
+                               constant_values=0.0)
 
                 for d in range(coords.shape[-1]):
                     coords[..., d] -= field[..., d]
@@ -1844,7 +1840,6 @@ class DistortionField(BaseAugmentation):
 
             outputs = None
 
-            # c = 0
             for c in range(num_channels):
                 if self.data_format == "channels_last":
                     inputs_ = inputs[..., c]

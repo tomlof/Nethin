@@ -1251,9 +1251,9 @@ class Dicom3DDataset(object):
     is determined by the list ``channel_names``.
 
     It will be assumed that the Dicom files have some particular tags. It will
-    be assumed that they have: "RescaleSlope", "RescaleIntercept", "Rows", and
-    "Columns". If these tags are missing, the files cannot be read and an
-    exception will be raised.
+    be assumed that they have: "InstanceNumber", "RescaleSlope",
+    "RescaleIntercept", "Rows", and "Columns". If these tags are missing, the
+    files cannot be read and an exception will be raised.
 
     This generator requires that the ``pydicom`` package be installed.
     """
@@ -1262,7 +1262,8 @@ class Dicom3DDataset(object):
                  image_names=None,
                  exact_image_name=True,
                  channel_names=None,
-                 transform=None):
+                 transform=None,
+                 data_format=None):
         """
         Parameters
         ----------
@@ -1301,6 +1302,15 @@ class Dicom3DDataset(object):
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
             which means to not apply any transform.
+
+        data_format : str, optional
+            One of `channels_last` (default) or `channels_first`. The ordering
+            of the dimensions in the inputs. `channels_last` corresponds to
+            inputs with shape `(batch, height, width, channels)` while
+            `channels_first` corresponds to inputs with shape `(batch,
+            channels, height, width)`. It defaults to the `image_data_format`
+            value found in your Keras config file at `~/.keras/keras.json`. If
+            you never set it, then it will be "channels_last".
         """
         if not _HAS_PYDICOM:
             raise RuntimeError('The "pydicom" package is not available.')
@@ -1348,8 +1358,14 @@ class Dicom3DDataset(object):
             else:
                 raise ValueError('``transform`` must be callable.')
 
+        self.data_format = normalize_data_format(data_format)
+
+        self._filtered_image_names = self._get_image_names()
+
     def _get_image_names(self):
-        # Get all subdirectories
+        # TODO: May be slow in case there are many files and many qualifiers
+
+        # Get all subdirectories (images)
         images_ = os.listdir(self.dir_path)
         images = []
         for im in images_:
@@ -1367,13 +1383,127 @@ class Dicom3DDataset(object):
 
         return images
 
+    def _get_channel_dirs(self, index):
+
+        dir_path = self.dir_path  # "~/data"
+        image_names = self._filtered_image_names  # ["Patient 1", "Patient 2"]
+        channel_names = self.channel_names  # [["CT.*", "[CT].*"], ["MR.*"]]
+
+        image_name = image_names[index]  # "Patient 1"
+        image_path = os.path.join(dir_path, image_name)  # "~/data/Patient 1"
+        channel_dirs_ = os.listdir(image_path)  # ["CT", "MR"]
+        channel_dirs = []
+        if channel_names is None:
+            for channel in channel_dirs_:  # channel = "CT"
+                channel_dirs.append(channel)  # channel_dirs = ["CT"]
+        else:
+            for channel_name in channel_names:  # channel_name = ["CT.*", "[CT].*"]
+                found = False
+                for channel_re in channel_name:  # channel_re = "CT.*"
+                    for channel in channel_dirs_:  # channel = "CT"
+                        if re.match(channel_re, channel):
+                            channel_dirs.append(channel)  # channel_dirs = ["CT"]
+                            found = True
+                            break
+                    if found:
+                        break
+                else:
+                    raise RuntimeError("Channel %s was not found for image %s"
+                                       % (channel_re, image_name))
+        # channel_dirs = ["CT", "MR"]
+        # return channel_dirs
+
+        all_channel_files = dict()
+        channel_length = None
+        for channel_dir_i in range(len(channel_dirs)):  # 0
+            channel_dir = channel_dirs[channel_dir_i]  # channel_dir = "CT"
+            channel_path = os.path.join(image_path,
+                                        channel_dir)  # "~/data/Patient 1/CT"
+            dicom_files = os.listdir(channel_path)  # ["im1.dcm", "im2.dcm"]
+
+            # Check that channels have the same length
+            if channel_length is None:
+                channel_length = len(dicom_files)
+            else:
+                if channel_length != len(dicom_files):
+                    raise RuntimeError("The numbers of slices for channel %s "
+                                       "and channel %d do not agree."
+                                       % (channel_dir, channel_dirs[0]))
+
+            # Create full relative or absolute path for all slices
+            full_file_names = []
+            for file in dicom_files:
+                dicom_file = os.path.join(channel_path,
+                                          file)  # "~/data/.../CT/im1.dcm"
+
+                full_file_names.append(dicom_file)  # ["~/data/.../im1.dcm"]
+
+            # {"CT": ["~/data/Patient 1/CT/im1.dcm"]}
+            all_channel_files[channel_dir] = full_file_names
+
+        return all_channel_files  # {"CT": [...], "MR": [...]}
+
+    def _read_image(self, files):
+
+        slices = [None] * (len(files) + 1)  # Allocate for zero as well
+        found_zero = False
+        for file in files:
+            data = pydicom.dcmread(file)
+            image = data.pixel_array.astype(float)
+
+            slice_index = int(float(data.InstanceNumber) + 0.5)
+            slope = float(data.RescaleSlope)
+            intercept = float(data.RescaleIntercept)
+
+            if slice_index == 0:
+                found_zero = True
+
+            # Convert to original units
+            image = image * slope + intercept
+
+            if slices[slice_index] is None:
+                slices[slice_index] = image
+            else:
+                raise RuntimeError("The same slice number (InstanceNumber) "
+                                   "appeared twice.")
+
+        if found_zero:
+            del slices[-1]
+        else:
+            del slices[0]
+
+        for slice_ in slices:
+            if slice_ is None:
+                raise RuntimeError("All slices could not be found among the "
+                                   "files in the directory.")
+
+        slices = np.array(slices)
+
+        return slices
+
     def __getitem__(self, index):
-        raise NotImplementedError
+
+        channels = self._get_channel_dirs(index)
+
+        image = []
+        for channel in channels.keys():
+            channel_image = self._read_image(channels[channel])
+
+            channel_image = np.transpose(channel_image, axes=[1, 2, 0])
+
+            image.append(channel_image)
+
+        image = np.array(image)
+
+        if self.data_format == "channels_last":
+            image = np.transpose(image, axes=[1, 2, 3, 0])  # Channels last
+
+        # TODO: Apply transform.
+
+        return image
 
     def __len__(self):
-        images = self._get_image_names()
-
-        return len(images)
+        return len(self._filtered_image_names)
 
 
 if _HAS_GENERATOR:

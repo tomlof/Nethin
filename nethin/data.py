@@ -43,13 +43,13 @@ except (ImportError):
 
 try:
     import pydicom
-    _HAS_DICOM = True
+    _HAS_PYDICOM = True
 except (ImportError):
     try:
         import dicom as pydicom
-        _HAS_DICOM = True
+        _HAS_PYDICOM = True
     except (ImportError):
-        _HAS_DICOM = False
+        _HAS_PYDICOM = False
 
 try:
     import pandas as pd
@@ -1222,6 +1222,160 @@ class SQLiteDataset(Dataset):
         return tensor
 
 
+class Dicom3DDataset(object):
+    r"""A dataset abstraction over 3D Dicom images in a given directory.
+
+    The images are organised in a directory for each image, a subdirectory
+    for each channel, and the third-dimension slices for each channel are
+    in those subdirectories. E.g., the directory tree
+
+        Im1/A/im1.dcm
+          ...
+        Im1/A/imN.dcm
+        Im1/B/im1.dcm
+          ...
+        Im1/B/imN.dcm
+        Im2/A/im1.dcm
+          ...
+        Im2/A/imN.dcm
+        Im2/B/im1.dcm
+          ...
+        Im2/B/imN.dcm
+
+    Thus contains two 3-dimensional images each with two channels (A and B),
+    and are N slices deep.
+
+    It will be assumed that the subdirectories of a given image directory
+    contains different "channels" (different image modes, for instance), and
+    they will be returned as such. The channel subdirectories and their order
+    is determined by the list ``channel_names``.
+
+    It will be assumed that the Dicom files have some particular tags. It will
+    be assumed that they have: "RescaleSlope", "RescaleIntercept", "Rows", and
+    "Columns". If these tags are missing, the files cannot be read and an
+    exception will be raised.
+
+    This generator requires that the ``pydicom`` package be installed.
+    """
+    def __init__(self,
+                 dir_path,
+                 image_names=None,
+                 exact_image_name=True,
+                 channel_names=None,
+                 transform=None):
+        """
+        Parameters
+        ----------
+        dir_path : str
+            Path to the directory containing the images. The subdirectories of
+            this directory represents (and contains) the 3-dimensional images.
+
+        image_names : list of str, optional
+            The subdirectories to extract files from below the ``dir_path``
+            directory. Every element of this list corresponds to an image that
+            will be read. If a subdirectory is not in this list, it will not
+            be read. If ``exact_image_name`` is ``True``, the elements may be
+            regular expressions. Default is ``None``, which means to read all
+            subdirectories.
+
+        exact_image_name : bool, optional
+            Whether or not to interpret the elements of ``image_names`` as
+            regular expressions or not. If ``True``, the names will not be
+            interpreted as regular expressions, but will be interpreted as
+            constant exact strings; and if ``False``, the names will be
+            interpreted as regular expressions. Default is ``True``, do not
+            interpret as regular expressions.
+
+        channel_names : list of str or list of str, optional
+            The inner strings or lists corresponds to directory names or
+            regular expressions defining the names of the subdirectories under
+            ``image_names`` that corresponds to channels of this image. Every
+            outer element of this list corresponds to a channel of the images
+            defined by ``image_names``. The elements of the inner lists are
+            alternative names for the subdirectories. If more than one
+            subdirectory name matches, only the first one found will be used.
+            Default is ``None``, which means to read all channels (note that
+            this may mean that the images have different channels, if their
+            subdirectories mismatch.)
+
+        transform : callable, optional
+            Custom transform to apply to each volume. Default is ``None``,
+            which means to not apply any transform.
+        """
+        if not _HAS_PYDICOM:
+            raise RuntimeError('The "pydicom" package is not available.')
+
+        self.dir_path = str(dir_path)
+        if not os.path.exists(dir_path):
+            raise ValueError("The given path does not exist: %s" % (dir_path,))
+
+        if image_names is None:
+            self.image_names = None
+        elif isinstance(image_names, (list, tuple)):
+            self.image_names = []
+            for name in image_names:
+                if isinstance(name, str):
+                    self.image_names.append(str(name))
+                else:
+                    raise ValueError('``image_names`` must be a list of '
+                                     'strings.')
+        else:
+            raise ValueError('``image_names`` must be a list of strings.')
+
+        self.exact_image_name = bool(exact_image_name)
+
+        if channel_names is None:
+            self.channel_names = None
+        elif isinstance(channel_names, (list, tuple)):
+            self.channel_names = []
+            for channel in channel_names:
+                if isinstance(channel, str):
+                    self.channel_names.append([str(channel)])
+                elif isinstance(channel, (list, tuple)):
+                    self.channel_names.append([str(name) for name in channel])
+                else:
+                    raise ValueError('``channel_names`` must be a list of '
+                                     'either strings or lists of strings.')
+        else:
+            raise ValueError('``channel_names`` must be a list of either '
+                             'strings or lists of strings.')
+
+        if transform is None:
+            self.transform = None
+        else:
+            if callable(transform):
+                self.transform = transform
+            else:
+                raise ValueError('``transform`` must be callable.')
+
+    def _get_image_names(self):
+        # Get all subdirectories
+        images_ = os.listdir(self.dir_path)
+        images = []
+        for im in images_:
+            if self.image_names is None:
+                images.append(im)  # In this case we add all subdirectories
+            else:
+                # Here we only add them if they match the given image names
+                if self.exact_image_name:  # Exact match
+                    if im in self.image_names:
+                        images.append(im)
+                else:  # Regular expression match
+                    for name in self.image_names:
+                        if re.match(name, im):
+                            images.append(im)
+
+        return images
+
+    def __getitem__(self, index):
+        raise NotImplementedError
+
+    def __len__(self):
+        images = self._get_image_names()
+
+        return len(images)
+
+
 if _HAS_GENERATOR:
     class BaseGenerator(with_metaclass(abc.ABCMeta, Generator)):  # Python 3
         pass
@@ -1890,7 +2044,7 @@ class Dicom3DGenerator(BaseGenerator):
                  data_format=None,
                  random_state=None):
 
-        if not _HAS_DICOM:
+        if not _HAS_PYDICOM:
             raise RuntimeError('The "dicom" package is not available.')
 
         self.dir_path = str(dir_path)
@@ -2390,7 +2544,7 @@ class DicomGenerator(BaseGenerator):
                  data_format=None,
                  random_state=None):
 
-        if not _HAS_DICOM:
+        if not _HAS_PYDICOM:
             raise RuntimeError('The "dicom" package is not available.')
 
         self.dir_path = str(dir_path)

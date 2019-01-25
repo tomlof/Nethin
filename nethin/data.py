@@ -1220,42 +1220,8 @@ class SQLiteDataset(Dataset):
         return tensor
 
 
-# TODO: Move functions here to a base class for Dicom3DDataset and Dicom2DDataset
-class Dicom3DDataset(object):
-    r"""A dataset abstraction over 3D Dicom images in a given directory.
-
-    The images are organised in a directory for each image, a subdirectory
-    for each channel, and the third-dimension slices for each channel are
-    in those subdirectories. E.g., the directory tree
-
-        Im1/A/im1.dcm
-          ...
-        Im1/A/imN.dcm
-        Im1/B/im1.dcm
-          ...
-        Im1/B/imN.dcm
-        Im2/A/im1.dcm
-          ...
-        Im2/A/imN.dcm
-        Im2/B/im1.dcm
-          ...
-        Im2/B/imN.dcm
-
-    Thus contains two 3-dimensional images each with two channels (A and B),
-    and are N slices deep (the slices are ordered according to the
-    InstanceNumber tag, and not by their file names).
-
-    It will be assumed that the subdirectories of a given image directory
-    contains different "channels" (different image modes, for instance), and
-    they will be returned as such. The channel subdirectories and their order
-    is determined by the list ``channel_names``.
-
-    It will be assumed that the Dicom files have some particular tags. It will
-    be assumed that they have: "InstanceNumber", "RescaleSlope",
-    "RescaleIntercept", "Rows", and "Columns". If these tags are missing, the
-    files cannot be read and an exception will be raised.
-
-    This dataset requires that the ``pydicom`` package be installed.
+class DicomDataset(with_metaclass(abc.ABCMeta, object)):
+    r"""Base class for Dicom datasets.
     """
     def __init__(self,
                  dir_path,
@@ -1265,7 +1231,7 @@ class Dicom3DDataset(object):
                  transform=None,
                  cache_size=None,
                  data_format=None):
-        """
+        r"""
         Parameters
         ----------
         dir_path : str
@@ -1378,6 +1344,116 @@ class Dicom3DDataset(object):
         self.data_format = normalize_data_format(data_format)
 
         self._filtered_image_names = self._get_image_names()
+
+
+# TODO: Move functions here to a base class for Dicom3DDataset and Dicom2DDataset
+class Dicom3DDataset(DicomDataset):
+    r"""A dataset abstraction over 3D Dicom images in a given directory.
+
+    The images are organised in a directory for each image, a subdirectory
+    for each channel, and the third-dimension slices for each channel are
+    in those subdirectories. E.g., the directory tree
+
+        Im1/A/im1.dcm
+          ...
+        Im1/A/imN.dcm
+        Im1/B/im1.dcm
+          ...
+        Im1/B/imN.dcm
+        Im2/A/im1.dcm
+          ...
+        Im2/A/imN.dcm
+        Im2/B/im1.dcm
+          ...
+        Im2/B/imN.dcm
+
+    Thus contains two 3-dimensional images each with two channels (A and B),
+    and are N slices deep (the slices are ordered according to the
+    InstanceNumber tag, and not by their file names).
+
+    It will be assumed that the subdirectories of a given image directory
+    contains different "channels" (different image modes, for instance), and
+    they will be returned as such. The channel subdirectories and their order
+    is determined by the list ``channel_names``.
+
+    It will be assumed that the Dicom files have some particular tags. It will
+    be assumed that they have: "InstanceNumber", "RescaleSlope",
+    "RescaleIntercept", "Rows", and "Columns". If these tags are missing, the
+    files cannot be read and an exception will be raised.
+
+    This dataset requires that the ``pydicom`` package be installed.
+    """
+    def __init__(self,
+                 dir_path,
+                 image_names=None,
+                 exact_image_names=True,
+                 channel_names=None,
+                 transform=None,
+                 cache_size=None,
+                 data_format=None):
+        """
+        Parameters
+        ----------
+        dir_path : str
+            Path to the directory containing the images. The subdirectories of
+            this directory represents (and contains) the 3-dimensional images.
+
+        image_names : list of str, optional
+            The subdirectories to extract files from below the ``dir_path``
+            directory. Every element of this list corresponds to an image that
+            will be read. If a subdirectory is not in this list, it will not
+            be read. If ``exact_image_name`` is ``True``, the elements may be
+            regular expressions. Default is ``None``, which means to read all
+            subdirectories.
+
+        exact_image_names : bool, optional
+            Whether or not to interpret the elements of ``image_names`` as
+            regular expressions or not. If ``True``, the names will not be
+            interpreted as regular expressions, but will be interpreted as
+            constant exact strings; and if ``False``, the names will be
+            interpreted as regular expressions. Default is ``True``, do not
+            interpret as regular expressions.
+
+        channel_names : list of str or list of str, optional
+            The inner strings or lists corresponds to directory names or
+            regular expressions defining the names of the subdirectories under
+            ``image_names`` that corresponds to channels of this image. Every
+            outer element of this list corresponds to a channel of the images
+            defined by ``image_names``. The elements of the inner lists are
+            alternative names for the subdirectories. If more than one
+            subdirectory name matches, only the first one found will be used.
+            Default is ``None``, which means to read all channels (note that
+            this may mean that the images have different channels, if their
+            subdirectories mismatch.)
+
+        transform : callable, optional
+            Custom transform to apply to each volume. Default is ``None``,
+            which means to not apply any transform.
+
+        cache_size : float or int, optional
+            The cache size in gigabytes (GiB, 2**30 bytes). If a value is
+            given, it must correspond to at least one byte (``1 / 2**30``). The
+            default value is ``None``, which means to not use a cache (nothing
+            is stored). Elements are dropped from the cache whenever the stored
+            data reaches ``cache_size``, the policy is first in first out (old
+            elements are dropped first).
+
+        data_format : str, optional
+            One of `channels_last` (default) or `channels_first`. The ordering
+            of the dimensions in the inputs. `channels_last` corresponds to
+            inputs with shape `(batch, height, width, channels)` while
+            `channels_first` corresponds to inputs with shape `(batch,
+            channels, height, width)`. It defaults to the `image_data_format`
+            value found in your Keras config file at `~/.keras/keras.json`. If
+            you never set it, then it will be "channels_last".
+        """
+        super().__init__(dir_path,
+                         image_names=image_names,
+                         exact_image_names=exact_image_names,
+                         channel_names=channel_names,
+                         transform=transform,
+                         cache_size=cache_size,
+                         data_format=data_format)
 
     def _get_image_names(self):
         # TODO: May be slow in case there are many files and many qualifiers
@@ -1549,7 +1625,7 @@ class Dicom3DDataset(object):
         return len(self._filtered_image_names)
 
 
-class Dicom2DDataset(object):
+class Dicom2DDataset(DicomDataset):
     r"""A dataset abstraction over Dicom images (or image slices).
 
     The images are organised in a directory for each image, a subdirectory
@@ -1659,43 +1735,13 @@ class Dicom2DDataset(object):
             value found in your Keras config file at `~/.keras/keras.json`. If
             you never set it, then it will be "channels_last".
         """
-        if not _HAS_PYDICOM:
-            raise RuntimeError('The "pydicom" package is not available.')
-
-        self.dir_path = str(dir_path)
-        if not os.path.exists(self.dir_path):
-            raise ValueError("The given path does not exist: %s" % (dir_path,))
-
-        if image_names is None:
-            self.image_names = None
-        elif isinstance(image_names, (list, tuple)):
-            self.image_names = []
-            for name in image_names:
-                if isinstance(name, str):
-                    self.image_names.append(str(name))
-                else:
-                    raise ValueError('``image_names`` must be a list of '
-                                     'strings.')
-        else:
-            raise ValueError('``image_names`` must be a list of strings.')
-
-        self.exact_image_names = bool(exact_image_names)
-
-        if channel_names is None:
-            self.channel_names = None
-        elif isinstance(channel_names, (list, tuple)):
-            self.channel_names = []
-            for channel in channel_names:
-                if isinstance(channel, str):
-                    self.channel_names.append([str(channel)])
-                elif isinstance(channel, (list, tuple)):
-                    self.channel_names.append([str(name) for name in channel])
-                else:
-                    raise ValueError('``channel_names`` must be a list of '
-                                     'either strings or lists of strings.')
-        else:
-            raise ValueError('``channel_names`` must be a list of either '
-                             'strings or lists of strings.')
+        super().__init__(dir_path,
+                         image_names=image_names,
+                         exact_image_names=exact_image_names,
+                         channel_names=channel_names,
+                         transform=transform,
+                         cache_size=cache_size,
+                         data_format=data_format)
 
         if channel_output_names is None:
             if channel_names is None:
@@ -1718,26 +1764,6 @@ class Dicom2DDataset(object):
         else:
             raise ValueError("The ``channel_output_names`` must be a list of "
                              "strings.")
-
-        if transform is None:
-            self.transform = None
-        else:
-            if callable(transform):
-                self.transform = transform
-            else:
-                raise ValueError('``transform`` must be callable.')
-
-        if cache_size is None:
-            self.cache_size = None
-        else:
-            self.cache_size = max(1.0 / 2**30, float(cache_size))
-            self._cache = dict()
-            self._cache_order = list()
-            self._cache_cur_size = 0
-
-        self.data_format = normalize_data_format(data_format)
-
-        self._filtered_image_names = self._get_image_names()
 
         self._all_images, self._image_names = self._get_all_images()
         if self.channel_output_names is not None:

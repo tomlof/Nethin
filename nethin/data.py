@@ -1228,6 +1228,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
                  image_names=None,
                  exact_image_names=True,
                  channel_names=None,
+                 channel_output_names=None,
                  transform=None,
                  cache_size=None,
                  data_format=None):
@@ -1265,6 +1266,13 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
             Default is ``None``, which means to read all channels (note that
             this may mean that the images have different channels, if their
             subdirectories mismatch.)
+
+        channel_output_names : list of str, optional
+            Custom names for the output images. The output is a ``dict``, and
+            the keys will be the elements of ``channel_output_names``. If
+            ``None``, the names will instead be the corresponding channel names
+            found using ``channel_names``. If ``channel_names`` is also None,
+            then a ``ValueError`` exception is raised.
 
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
@@ -1325,6 +1333,28 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
             raise ValueError('``channel_names`` must be a list of either '
                              'strings or lists of strings.')
 
+        if channel_output_names is None:
+            if channel_names is None:
+                raise ValueError("Both ``channel_output_names`` and "
+                                 "``channel_names`` can't be ``None`` "
+                                 "simultaneously.")
+            else:
+                self.channel_output_names = None
+        elif isinstance(channel_output_names, (list, tuple)):
+            self.channel_output_names = \
+                    [str(name) for name in channel_output_names]
+            if len(self.channel_output_names) != len(self.channel_names):
+                raise ValueError("The ``channel_output_names`` and "
+                                 "``channel_names`` must have the same "
+                                 "length.")
+            if len(self.channel_output_names) \
+                    != len(set(self.channel_output_names)):
+                raise ValueError("The elements in ``channel_output_names`` "
+                                 " must be unique.")
+        else:
+            raise ValueError("The ``channel_output_names`` must be a list of "
+                             "strings.")
+
         if transform is None:
             self.transform = None
         else:
@@ -1346,7 +1376,6 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
         self._filtered_image_names = self._get_image_names()
 
 
-# TODO: Move functions here to a base class for Dicom3DDataset and Dicom2DDataset
 class Dicom3DDataset(DicomDataset):
     r"""A dataset abstraction over 3D Dicom images in a given directory.
 
@@ -1388,6 +1417,7 @@ class Dicom3DDataset(DicomDataset):
                  image_names=None,
                  exact_image_names=True,
                  channel_names=None,
+                 channel_output_names=None,
                  transform=None,
                  cache_size=None,
                  data_format=None):
@@ -1426,6 +1456,13 @@ class Dicom3DDataset(DicomDataset):
             this may mean that the images have different channels, if their
             subdirectories mismatch.)
 
+        channel_output_names : list of str, optional
+            Custom names for the output images. The output is a ``dict``, and
+            the keys will be the elements of ``channel_output_names``. If
+            ``None``, the names will instead be the corresponding channel names
+            found using ``channel_names``. If ``channel_names`` is also None,
+            then a ``ValueError`` exception is raised.
+
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
             which means to not apply any transform.
@@ -1451,6 +1488,7 @@ class Dicom3DDataset(DicomDataset):
                          image_names=image_names,
                          exact_image_names=exact_image_names,
                          channel_names=channel_names,
+                         channel_output_names=channel_output_names,
                          transform=transform,
                          cache_size=cache_size,
                          data_format=data_format)
@@ -1506,7 +1544,8 @@ class Dicom3DDataset(DicomDataset):
         # channel_dirs = ["CT", "MR"]
         # return channel_dirs
 
-        all_channel_files = dict()
+        all_channel_files = list()
+        all_channel_names = list()
         channel_length = None
         for channel_dir_i in range(len(channel_dirs)):  # 0
             channel_dir = channel_dirs[channel_dir_i]  # channel_dir = "CT"
@@ -1534,9 +1573,13 @@ class Dicom3DDataset(DicomDataset):
                 full_file_names.append(dicom_file)  # ["~/data/.../im1.dcm"]
 
             # {"CT": ["~/data/Patient 1/CT/im1.dcm"]}
-            all_channel_files[channel_dir] = full_file_names
+            if self.channel_output_names is not None:
+                channel_dir = self.channel_output_names[channel_dir_i]
+            all_channel_files.append(full_file_names)
+            all_channel_names.append(channel_dir)
 
-        return all_channel_files  # {"CT": [...], "MR": [...]}
+        # [[...], [...]], ["CT", "MR"]
+        return all_channel_files, all_channel_names
 
     def _read_image(self, files):
 
@@ -1588,29 +1631,34 @@ class Dicom3DDataset(DicomDataset):
             if index in self._cache:  # In cache?
                 return self._cache[index]  # Return stored data
 
-        channels = self._get_channel_dirs(index)
+        channel_files, channel_names = self._get_channel_dirs(index)
 
-        image = []
-        for channel in channels.keys():
-            channel_image = self._read_image(channels[channel])
+        image = dict()
+        image_size = 0  # In case of a cache is used
+        for channel_i in range(len(channel_names)):
+            channel_image = self._read_image(channel_files[channel_i])
 
             channel_image = np.transpose(channel_image, axes=[1, 2, 0])
 
-            image.append(channel_image)
+            if self.data_format == "channels_last":
+                channel_image = channel_image[..., np.newaxis]
+            else:
+                channel_image = channel_image[np.newaxis, ...]
 
-        image = np.array(image)
+            image_size += channel_image.nbytes
 
-        if self.data_format == "channels_last":
-            image = np.transpose(image, axes=[1, 2, 3, 0])  # Channels last
+            image[channel_names[channel_i]] = channel_image
 
         if self.transform is not None:
             image = self.transform(image)
 
         if self.cache_size is not None:  # Use cache?
-            this_size = image.nbytes
+            this_size = image_size
             while self._cache_cur_size + this_size > self.cache_size * 2**30:
                 index_drop = self._cache_order[0]
-                index_size = self._cache[index_drop].nbytes
+                index_size = 0
+                for c in self._cache[index_drop].keys():
+                    index_size += self._cache[index_drop][c].nbytes
                 del self._cache[index_drop]
                 self._cache_cur_size -= index_size
                 self._cache_order = self._cache_order[1:]
@@ -1739,31 +1787,10 @@ class Dicom2DDataset(DicomDataset):
                          image_names=image_names,
                          exact_image_names=exact_image_names,
                          channel_names=channel_names,
+                         channel_output_names=channel_output_names,
                          transform=transform,
                          cache_size=cache_size,
                          data_format=data_format)
-
-        if channel_output_names is None:
-            if channel_names is None:
-                raise ValueError("Both ``channel_output_names`` and "
-                                 "``channel_names`` can't be ``None`` "
-                                 "simultaneously.")
-            else:
-                self.channel_output_names = None
-        elif isinstance(channel_output_names, (list, tuple)):
-            self.channel_output_names = \
-                    [str(name) for name in channel_output_names]
-            if len(self.channel_output_names) != len(self.channel_names):
-                raise ValueError("The ``channel_output_names`` and "
-                                 "``channel_names`` must have the same "
-                                 "length.")
-            if len(self.channel_output_names) \
-                    != len(set(self.channel_output_names)):
-                raise ValueError("The elements in ``channel_output_names`` "
-                                 " must be unique.")
-        else:
-            raise ValueError("The ``channel_output_names`` must be a list of "
-                             "strings.")
 
         self._all_images, self._image_names = self._get_all_images()
         if self.channel_output_names is not None:

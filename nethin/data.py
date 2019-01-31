@@ -71,7 +71,7 @@ try:
     from torch.utils.data import DataLoader
     _HAS_PYTORCH = True
 
-except (ImportError):
+except (ImportError):  # Copy of PyTorch code
     _HAS_PYTORCH = False
 
     class Dataset(object):
@@ -381,7 +381,7 @@ except (ImportError):
             # elif isinstance(batch[0], string_classes):
             return batch
         elif isinstance(batch[0], collections.abc.Mapping):
-            print(batch)
+            # print(batch)
             # elif isinstance(batch[0], container_abcs.Mapping):
             return {key: default_collate([d[key] for d in batch])
                     for key in batch[0]}
@@ -627,7 +627,7 @@ except (ImportError):
 
             # Nethin addition: We don't allow multiprocess loading of images
             if int(num_workers) > 0:
-                warnings.warm("PyTorch is not available. Multithreaded "
+                warnings.warn("PyTorch is not available. Multithreaded "
                               "loading is not available. num_workers will be "
                               "0.")
             self.num_workers = 0
@@ -1375,6 +1375,62 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
 
         self._filtered_image_names = self._get_image_names()
 
+    def _listdir(self, channel_path):
+        """Lists all DICOM images in a given folder.
+        """
+        files = os.listdir(channel_path)
+
+        dicom_files = [None] * (len(files) + 1)
+        num_dicom_files = len(dicom_files)
+        found_zero = False  # Inconsistent use of indices starting with 0 or 1
+        num_dicom_found = 0
+        for file in files:
+            file_path = os.path.join(channel_path, file)
+
+            try:
+                data = pydicom.dcmread(file_path,
+                                       stop_before_pixels=True,
+                                       force=False,
+                                       specific_tags=["InstanceNumber"])
+
+                if hasattr(data, "InstanceNumber"):
+                    slice_index = data.InstanceNumber
+                    dicom_files[slice_index] = file
+
+                    if slice_index == 0:
+                        found_zero = True
+
+                    num_dicom_found += 1
+
+            except pydicom.errors.InvalidDicomError:
+                pass  # Skip file if not a DICOM file
+
+        # Remove first or last, depending on indexing starting with 0 or 1
+        if found_zero:
+            if dicom_files[-1] is not None:
+                raise RuntimeError("The order of the slices is not "
+                                   "consistent.")
+            del dicom_files[-1]
+            num_dicom_files -= 1
+        else:
+            if dicom_files[0] is not None:
+                raise RuntimeError("The order of the slices is not "
+                                   "consistent.")
+            del dicom_files[0]
+            num_dicom_files -= 1
+
+        # Remove any extra (non DICOM) files
+        for i in range(num_dicom_files - 1, num_dicom_found - 1, -1):
+            del dicom_files[i]  # Remove unused spots
+
+        # Check that all slices were found
+        for file in dicom_files:
+            if file is None:
+                raise RuntimeError("All slices could not be found among the "
+                                   "files in the directory.")
+
+        return dicom_files
+
 
 class Dicom3DDataset(DicomDataset):
     r"""A dataset abstraction over 3D Dicom images in a given directory.
@@ -1551,7 +1607,7 @@ class Dicom3DDataset(DicomDataset):
             channel_dir = channel_dirs[channel_dir_i]  # channel_dir = "CT"
             channel_path = os.path.join(image_path,
                                         channel_dir)  # "~/data/Patient 1/CT"
-            dicom_files = os.listdir(channel_path)  # ["im1.dcm", "im2.dcm"]
+            dicom_files = self._listdir(channel_path)  # ["im1.dcm", "im2.dcm"]
 
             # Check that channels have the same length
             if channel_length is None:
@@ -1559,7 +1615,7 @@ class Dicom3DDataset(DicomDataset):
             else:
                 if channel_length != len(dicom_files):
                     raise RuntimeError("The numbers of slices for channel %s "
-                                       "and channel %d do not agree."
+                                       "and channel %s do not agree."
                                        % (channel_dir, channel_dirs[0]))
 
             # TODO: Also check image sizes within a channel.
@@ -1629,12 +1685,11 @@ class Dicom3DDataset(DicomDataset):
 
         if self.cache_size is not None:  # Use cache?
             if index in self._cache:  # In cache?
-                return self._cache[index]  # Return stored data
+                return self._cache[index][0]  # Return stored data
 
         channel_files, channel_names = self._get_channel_dirs(index)
 
         image = dict()
-        image_size = 0  # In case of a cache is used
         for channel_i in range(len(channel_names)):
             channel_image = self._read_image(channel_files[channel_i])
 
@@ -1645,25 +1700,21 @@ class Dicom3DDataset(DicomDataset):
             else:
                 channel_image = channel_image[np.newaxis, ...]
 
-            image_size += channel_image.nbytes
-
             image[channel_names[channel_i]] = channel_image
 
         if self.transform is not None:
             image = self.transform(image)
 
         if self.cache_size is not None:  # Use cache?
-            this_size = image_size
+            this_size = utils.sizeof(image)
             while self._cache_cur_size + this_size > self.cache_size * 2**30:
                 index_drop = self._cache_order[0]
-                index_size = 0
-                for c in self._cache[index_drop].keys():
-                    index_size += self._cache[index_drop][c].nbytes
+                index_size = self._cache[index_drop][1]
                 del self._cache[index_drop]
                 self._cache_cur_size -= index_size
                 self._cache_order = self._cache_order[1:]
 
-            self._cache[index] = image
+            self._cache[index] = [image, this_size]
             self._cache_cur_size += this_size
             self._cache_order.append(index)
 
@@ -1817,62 +1868,6 @@ class Dicom2DDataset(DicomDataset):
 
         return images
 
-    def _listdir(self, channel_path):
-        """Lists all DICOM images in a given folder.
-        """
-        files = os.listdir(channel_path)
-
-        dicom_files = [None] * (len(files) + 1)
-        num_dicom_files = len(dicom_files)
-        found_zero = False  # Inconsistent use of indices starting with 0 or 1
-        num_dicom_found = 0
-        for file in files:
-            file_path = os.path.join(channel_path, file)
-
-            try:
-                data = pydicom.dcmread(file_path,
-                                       stop_before_pixels=True,
-                                       force=False,
-                                       specific_tags=["InstanceNumber"])
-
-                if hasattr(data, "InstanceNumber"):
-                    slice_index = data.InstanceNumber
-                    dicom_files[slice_index] = file
-
-                    if slice_index == 0:
-                        found_zero = True
-
-                    num_dicom_found += 1
-
-            except pydicom.errors.InvalidDicomError:
-                pass  # Skip file if not a DICOM file
-
-        # Remove first or last, depending on indexing starting with 0 or 1
-        if found_zero:
-            if dicom_files[-1] is not None:
-                raise RuntimeError("The order of the slices is not "
-                                   "consistent.")
-            del dicom_files[-1]
-            num_dicom_files -= 1
-        else:
-            if dicom_files[0] is not None:
-                raise RuntimeError("The order of the slices is not "
-                                   "consistent.")
-            del dicom_files[0]
-            num_dicom_files -= 1
-
-        # Remove any extra (non DICOM) files
-        for i in range(num_dicom_files, num_dicom_found, -1):
-            del dicom_files[i]  # Remove unused spots
-
-        # Check that all slices were found
-        for file in dicom_files:
-            if file is None:
-                raise RuntimeError("All slices could not be found among the "
-                                   "files in the directory.")
-
-        return dicom_files
-
     def _get_all_images(self):
         """Returns a list of all the files included in this dataset in order.
 
@@ -1938,7 +1933,7 @@ class Dicom2DDataset(DicomDataset):
                 else:
                     if channel_length != len(dicom_files):
                         raise RuntimeError("The numbers of slices for channel "
-                                           "%s and channel %d do not agree."
+                                           "%s and channel %s do not agree."
                                            % (channel_dir, channel_dirs[0]))
 
                 # TODO: Also check image sizes within a channel.
@@ -1983,7 +1978,7 @@ class Dicom2DDataset(DicomDataset):
 
         if self.cache_size is not None:  # Use cache?
             if index in self._cache:  # In cache?
-                return self._cache[index]  # Return stored data
+                return self._cache[index][0]  # Return stored data
 
         images = self._all_images[index]
         image = {}
@@ -2000,17 +1995,15 @@ class Dicom2DDataset(DicomDataset):
             image = self.transform(image)
 
         if self.cache_size is not None:  # Use cache?
-            this_size = 0
-            for im in image.keys():
-                this_size += image[im].nbytes
+            this_size = utils.sizeof(image)
             while self._cache_cur_size + this_size > self.cache_size * 2**30:
                 index_drop = self._cache_order[0]
-                index_size = self._cache[index_drop].nbytes
+                index_size = self._cache[index_drop][1]
                 del self._cache[index_drop]
                 self._cache_cur_size -= index_size
                 self._cache_order = self._cache_order[1:]
 
-            self._cache[index] = image
+            self._cache[index] = [image, this_size]
             self._cache_cur_size += this_size
             self._cache_order.append(index)
 

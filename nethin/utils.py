@@ -10,12 +10,28 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
+import gc
+import sys
 import six
 import json
 import base64
+import numbers
+import builtins
+from collections.abc import Iterable
+import queue
 
 import numpy as np
 import scipy.interpolate as interpolate
+
+try:
+    from pympler.asizeof import asizeof as _sizeof
+    _HAS_SIZEOF = True
+except (ImportError):
+    try:
+        from objsize import get_deep_size as _sizeof
+        _HAS_SIZEOF = True
+    except (ImportError):
+        _HAS_SIZEOF = False
 
 import tensorflow as tf
 import keras.backend as K
@@ -43,6 +59,10 @@ __all__ = ["Helper", "get_device_string", "with_device",
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
+
+_builtin_types = [getattr(builtins, t)
+                  for t in dir(builtins)
+                  if isinstance(getattr(builtins, t), type)]
 
 
 class TensorflowHelper(object):
@@ -1277,6 +1297,71 @@ def vector_median(vf, window=1, order=2):
         new_vf[tuple(list(coord) + [slice(None)])] = new_vector
 
     return new_vf
+
+
+def sizeof(o, use_external=True):
+    r"""Attempts to determine the size in bytes of the provided object.
+
+    If you have Pymbler or objsize (both available through pip) installed, this
+    function will use them directly (per default, and when
+    ``use_external=True``). Results may therefore depend on your installed
+    packages.
+
+    Parameters
+    ----------
+    o : object
+        The object for which the size should be determined.
+
+    use_external : bool, optional
+        Whether or not to use the external size checkers instead of the
+        build-in one provided here. The external packages are either Pympler
+        (tested first), or objsize (tested second). Default is True, use the
+        external size packages.
+
+    Examples
+    --------
+    >>> from sys import getsizeof
+    >>> from nethin.utils import sizeof
+    >>> import numpy as np
+    >>> getsizeof(1) == sizeof(1, use_external=False)
+    True
+    >>> getsizeof(1.0) == sizeof(1.0, use_external=False)
+    True
+    >>> getsizeof("test") == sizeof("test", use_external=False)
+    True
+    >>> a = np.zeros((3, 3), dtype=np.float32)
+    >>> getsizeof(a) == sizeof(a, use_external=False)
+    True
+    >>> a = np.zeros((3, 3), dtype=np.float64)
+    >>> getsizeof(a) == sizeof(a, use_external=False)
+    True
+    """
+    if _HAS_SIZEOF and use_external:
+        return _sizeof(o)
+
+    size = 0
+    seen = set()
+    q = queue.Queue()
+    q.put(o)
+    while not q.empty():
+        o = q.get()
+        _id = id(o)
+        if (_id not in seen) and (not isinstance(o, type)):
+            seen.add(_id)
+            if isinstance(o, (bool, int, float, complex, numbers.Number)):
+                s = sys.getsizeof(o)
+                print("Basic: %d" % (s,))
+                size += s
+            elif isinstance(o, (str, bytearray, bytes)):
+                s = sys.getsizeof(o)
+                print("String: %d" % (s,))
+                size += s
+            else:
+                size += sys.getsizeof(o)
+                for o_ in gc.get_referents(o):
+                    q.put(o_)
+
+    return size
 
 
 class RangeType(object):

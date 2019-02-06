@@ -14,11 +14,11 @@ import warnings
 import numpy as np
 import scipy.ndimage
 
-try:
-    import skimage.transform as transform
-    _HAS_SKIMAGE = True
-except (ImportError):
-    _HAS_SKIMAGE = False
+# try:
+#     import skimage.transform as transform
+#     _HAS_SKIMAGE = True
+# except (ImportError):
+#     _HAS_SKIMAGE = False
 
 try:
     from keras.utils.conv_utils import normalize_data_format
@@ -76,6 +76,22 @@ class BaseAugmentation(metaclass=abc.ABCMeta):
 
             else:  # May crash here..
                 self.random_state = np.random.RandomState(seed=random_state)
+
+        self._lock = False
+        self._random = None
+
+    def lock(self):
+        """Use this function to reuse the same augmentation multiple times.
+
+        Useful if e.g. the same transform need to be applied to multiple
+        channels even when randomness is involved.
+        """
+        self._lock = True
+
+    def unlock(self):
+        """Use this function to stop using the same augmentation.
+        """
+        self._lock = False
 
     def __call__(self, inputs):
         """The function performing the data augmentation.
@@ -224,6 +240,50 @@ class Flip(BaseAugmentation):
            [0.83244264, 0.21233911],
            [0.05808361, 0.86617615],
            [0.37454012, 0.95071431]])
+    >>>
+    >>> np.random.seed(42)
+    >>>
+    >>> X = np.random.rand(2, 3)
+    >>> X  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.37454012, 0.95071431, 0.73199394],
+           [0.59865848, 0.15601864, 0.15599452]])
+    >>> flip = Flip(probability=[0.0, 0.5],
+    ...             random_state=42)  # doctest: +ELLIPSIS
+    >>> flip(X)
+    array([[0.37454012, 0.95071431, 0.73199394],
+           [0.59865848, 0.15601864, 0.15599452]])
+    >>> flip(X)
+    array([[0.37454012, 0.95071431, 0.73199394],
+           [0.59865848, 0.15601864, 0.15599452]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip.lock()
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip(X)
+    array([[0.73199394, 0.95071431, 0.37454012],
+           [0.15599452, 0.15601864, 0.59865848]])
+    >>> flip.unlock()
+    >>> flip(X)
+    array([[0.37454012, 0.95071431, 0.73199394],
+           [0.59865848, 0.15601864, 0.15599452]])
     """
     def __init__(self,
                  probability=0.5,
@@ -272,13 +332,19 @@ class Flip(BaseAugmentation):
         else:  # data_format == "channels_first":
             self._axis_offset = 1
 
+        self._random = [None] * len(self.probability)
+
     def __call__(self, inputs):
 
         outputs = inputs
         for i in range(len(self.probability)):
             p = self.probability[i]
             a = self._axis_offset + self.axis[i]
-            if self.random_state.rand() < p:
+
+            if (not self._lock) or (self._random[i] is None):
+                self._random[i] = self.random_state.rand()
+
+            if self._random[i] < p:
                 outputs = np.flip(outputs, axis=a)
 
         return outputs
@@ -467,6 +533,89 @@ class Resize(BaseAugmentation):
            [3. , 3.5, 4. , 4.5, 5. ],
            [4.5, 5. , 5.5, 6. , 6.5],
            [6. , 6.5, 7. , 7.5, 8. ]])
+    >>>
+    >>> np.random.seed(42)
+    >>> X = np.array([[1, 2],
+    ...               [2, 3]]).astype(float)
+    >>> X = np.reshape(X, [2, 2, 1])
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[1., 2.],
+           [2., 3.]])
+    >>> resize = Resize([2, 2],
+    ...                 random_size=[3, 3],
+    ...                 keep_aspect_ratio=True,
+    ...                 order=1,
+    ...                 data_format="channels_last")
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1., 2.],
+           [2., 3.]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1., 2.],
+           [2., 3.]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize.lock()
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize.unlock()
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.        , 1.33333333, 1.66666667, 2.        ],
+           [1.33333333, 1.66666667, 2.        , 2.33333333],
+           [1.66666667, 2.        , 2.33333333, 2.66666667],
+           [2.        , 2.33333333, 2.66666667, 3.        ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.  , 1.25, 1.5 , 1.75, 2.  ],
+           [1.25, 1.5 , 1.75, 2.  , 2.25],
+           [1.5 , 1.75, 2.  , 2.25, 2.5 ],
+           [1.75, 2.  , 2.25, 2.5 , 2.75],
+           [2.  , 2.25, 2.5 , 2.75, 3.  ]])
+    >>> resize(X)[:, :, 0]
+    array([[1.  , 1.25, 1.5 , 1.75, 2.  ],
+           [1.25, 1.5 , 1.75, 2.  , 2.25],
+           [1.5 , 1.75, 2.  , 2.25, 2.5 ],
+           [1.75, 2.  , 2.25, 2.5 , 2.75],
+           [2.  , 2.25, 2.5 , 2.75, 3.  ]])
     """
     def __init__(self,
                  size,
@@ -514,6 +663,11 @@ class Resize(BaseAugmentation):
         self.cval = float(cval)
         self.prefilter = bool(prefilter)
 
+        if isinstance(self.random_size, int):
+            self._random = None
+        else:
+            self._random = [None] * len(self.size)
+
     def __call__(self, inputs):
 
         shape = inputs.shape
@@ -531,13 +685,20 @@ class Resize(BaseAugmentation):
                              "what is present in the data.")
 
         if isinstance(self.random_size, int):
-            random_size = np.random.randint(0, self.random_size + 1)
+            # random_size = self.random_state.randint(0, self.random_size + 1)
+            if (not self._lock) or (self._random is None):
+                self._random = self.random_state.randint(
+                                                    0, self.random_size + 1)
             for i in range(len(self.size)):  # Recall: May be fewer than ndim
-                size_[i] = self.size[i] + random_size
+                size_[i] = self.size[i] + self._random
         else:  # List or tuple
             for i in range(len(self.size)):  # Recall: May be fewer than ndim
-                random_size = np.random.randint(0, self.random_size[i] + 1)
-                size_[i] = self.size[i] + random_size
+                if (not self._lock) or (self._random[i] is None):
+                    # random_size = self.random_state.randint(
+                    #         0, self.random_size[i] + 1)
+                    self._random[i] = self.random_state.randint(
+                                                    0, self.random_size[i] + 1)
+                size_[i] = self.size[i] + self._random[i]
 
         if self.keep_aspect_ratio:
             if self.minimum_size:
@@ -1061,6 +1222,43 @@ class Crop(BaseAugmentation):
     True
     >>> crop(X).shape == X[:, 1:3, 1:3, :].shape
     True
+    >>> np.random.seed(42)
+    >>> X = np.random.rand(4, 4, 1)
+    >>> X[:, :, 0]  # doctest: +NORMALIZE_WHITESPACE
+    array([[0.37454012, 0.95071431, 0.73199394, 0.59865848],
+           [0.15601864, 0.15599452, 0.05808361, 0.86617615],
+           [0.60111501, 0.70807258, 0.02058449, 0.96990985],
+           [0.83244264, 0.21233911, 0.18182497, 0.18340451]])
+    >>> crop = Crop([2, 2], random=True, data_format="channels_last")
+    >>> crop(X)[:, :, 0]
+    array([[0.15599452, 0.05808361],
+           [0.70807258, 0.02058449]])
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop.lock()
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop(X)[:, :, 0]
+    array([[0.37454012, 0.95071431],
+           [0.15601864, 0.15599452]])
+    >>> crop.unlock()
+    >>> crop(X)[:, :, 0]
+    array([[0.73199394, 0.59865848],
+           [0.05808361, 0.86617615]])
+    >>> crop(X)[:, :, 0]
+    array([[0.02058449, 0.96990985],
+           [0.18182497, 0.18340451]])
     """
     def __init__(self,
                  crop,
@@ -1097,6 +1295,9 @@ class Crop(BaseAugmentation):
         else:
             crop = self.crop
 
+        if self._random is None:
+            self._random = [None] * len(crop)
+
         if len(crop) != ndim:
             warnings.warn("The provided number of crop sizes (%d) does not "
                           "match the required number of crop sizes (%d). The "
@@ -1114,9 +1315,15 @@ class Crop(BaseAugmentation):
                 coord = int(((inputs.shape[self._axis_offset + i] / 2)
                              - (crop[i] / 2)) + 0.5)
             else:
-                coord = self.random_state.randint(
-                    0,
-                    max(1, inputs.shape[self._axis_offset + i] - crop[i] + 1))
+                if (not self._lock) or (self._random[i] is None):
+                    coord = self.random_state.randint(
+                        0,
+                        max(1,
+                            inputs.shape[self._axis_offset + i] - crop[i] + 1))
+
+                    self._random[i] = coord
+                else:
+                    coord = self._random[i]
 
             slices.append(slice(coord, coord + crop[i]))
 
@@ -2223,6 +2430,7 @@ class ImageHistogramTransform(BaseAugmentation):
                  transform,
                  min_value=None,
                  max_value=None,
+                 vectorize=True,
                  data_format=None,
                  random_state=None):
 
@@ -2244,14 +2452,20 @@ class ImageHistogramTransform(BaseAugmentation):
         else:
             self.max_value = float(max_value)
 
-        self._vec_trans = np.vectorize(self.transform)
+        self.vectorize = bool(vectorize)
+
+        if self.vectorize:
+            self._vec_trans = np.vectorize(self.transform)
 
     def __call__(self, inputs):
 
         if isinstance(self.transform, Transform):
             self.transform.prepare()
 
-        outputs = self._vec_trans(inputs)
+        if self.vectorize:
+            outputs = self._vec_trans(inputs)
+        else:
+            outputs = self.transform(inputs)
 
         if (self.min_value is not None) or (self.max_value is not None):
             outputs = np.clip(outputs, self.min_value, self.max_value)

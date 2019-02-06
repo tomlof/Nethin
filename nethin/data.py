@@ -1683,40 +1683,41 @@ class Dicom3DDataset(DicomDataset):
 
     def __getitem__(self, index):
 
-        if self.cache_size is not None:  # Use cache?
-            if index in self._cache:  # In cache?
-                return self._cache[index][0]  # Return stored data
+        # Use cache and in cache?
+        if (self.cache_size is not None) and (index in self._cache):
+            image = dict(self._cache[index][0])  # Use stored data
+        else:
+            channel_files, channel_names = self._get_channel_dirs(index)
 
-        channel_files, channel_names = self._get_channel_dirs(index)
+            image = dict()
+            for channel_i in range(len(channel_names)):
+                channel_image = self._read_image(channel_files[channel_i])
 
-        image = dict()
-        for channel_i in range(len(channel_names)):
-            channel_image = self._read_image(channel_files[channel_i])
+                channel_image = np.transpose(channel_image, axes=[1, 2, 0])
 
-            channel_image = np.transpose(channel_image, axes=[1, 2, 0])
+                if self.data_format == "channels_last":
+                    channel_image = channel_image[..., np.newaxis]
+                else:
+                    channel_image = channel_image[np.newaxis, ...]
 
-            if self.data_format == "channels_last":
-                channel_image = channel_image[..., np.newaxis]
-            else:
-                channel_image = channel_image[np.newaxis, ...]
+                image[channel_names[channel_i]] = channel_image
 
-            image[channel_names[channel_i]] = channel_image
+            if self.cache_size is not None:  # Use cache?
+                this_size = utils.sizeof(image)
+                while self._cache_cur_size + this_size > self.cache_size * 2**30:
+                    index_drop = self._cache_order[0]
+                    index_size = self._cache[index_drop][1]
+                    del self._cache[index_drop]
+                    self._cache_cur_size -= index_size
+                    self._cache_order = self._cache_order[1:]
 
+                self._cache[index] = [dict(image), this_size]
+                self._cache_cur_size += this_size
+                self._cache_order.append(index)
+
+        # Perform transform last, then augmentation will work as well
         if self.transform is not None:
             image = self.transform(image)
-
-        if self.cache_size is not None:  # Use cache?
-            this_size = utils.sizeof(image)
-            while self._cache_cur_size + this_size > self.cache_size * 2**30:
-                index_drop = self._cache_order[0]
-                index_size = self._cache[index_drop][1]
-                del self._cache[index_drop]
-                self._cache_cur_size -= index_size
-                self._cache_order = self._cache_order[1:]
-
-            self._cache[index] = [image, this_size]
-            self._cache_cur_size += this_size
-            self._cache_order.append(index)
 
         return image
 
@@ -1976,36 +1977,37 @@ class Dicom2DDataset(DicomDataset):
 
     def __getitem__(self, index):
 
-        if self.cache_size is not None:  # Use cache?
-            if index in self._cache:  # In cache?
-                return self._cache[index][0]  # Return stored data
+        # Use cache and in cache?
+        if (self.cache_size is not None) and (index in self._cache):
+            image = dict(self._cache[index][0])  # Use stored data
+        else:
+            images = self._all_images[index]
+            image = {}
+            for channel_i in range(len(self._image_names)):
+                channel = self._image_names[channel_i]
+                channel_image = self._read_image_slice(images[channel_i])
+                if self.data_format == "channels_last":
+                    channel_image = channel_image[..., np.newaxis]
+                else:
+                    channel_image = channel_image[np.newaxis, ...]
+                image[channel] = channel_image
 
-        images = self._all_images[index]
-        image = {}
-        for channel_i in range(len(self._image_names)):
-            channel = self._image_names[channel_i]
-            channel_image = self._read_image_slice(images[channel_i])
-            if self.data_format == "channels_last":
-                channel_image = channel_image[..., np.newaxis]
-            else:
-                channel_image = channel_image[np.newaxis, ...]
-            image[channel] = channel_image
+            if self.cache_size is not None:  # Use cache?
+                this_size = utils.sizeof(image)
+                while self._cache_cur_size + this_size > self.cache_size * 2**30:
+                    index_drop = self._cache_order[0]
+                    index_size = self._cache[index_drop][1]
+                    del self._cache[index_drop]
+                    self._cache_cur_size -= index_size
+                    self._cache_order = self._cache_order[1:]
 
+                self._cache[index] = [dict(image), this_size]
+                self._cache_cur_size += this_size
+                self._cache_order.append(index)
+
+        # Perform transform last, then augmentation will work as well
         if self.transform is not None:
             image = self.transform(image)
-
-        if self.cache_size is not None:  # Use cache?
-            this_size = utils.sizeof(image)
-            while self._cache_cur_size + this_size > self.cache_size * 2**30:
-                index_drop = self._cache_order[0]
-                index_size = self._cache[index_drop][1]
-                del self._cache[index_drop]
-                self._cache_cur_size -= index_size
-                self._cache_order = self._cache_order[1:]
-
-            self._cache[index] = [image, this_size]
-            self._cache_cur_size += this_size
-            self._cache_order.append(index)
 
         return image
 

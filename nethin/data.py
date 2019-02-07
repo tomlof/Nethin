@@ -1229,6 +1229,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
                  exact_image_names=True,
                  channel_names=None,
                  channel_output_names=None,
+                 order_slices=True,
                  transform=None,
                  cache_size=None,
                  data_format=None):
@@ -1273,6 +1274,12 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
             ``None``, the names will instead be the corresponding channel names
             found using ``channel_names``. If ``channel_names`` is also None,
             then a ``ValueError`` exception is raised.
+
+        order_slices : bool, optional
+            Whether or not the read slices should be put in order. Not putting
+            them in order is faster than putting them in order, and the
+            difference may be noticable when many files are processed. Default
+            is ``True``, read the files in order.
 
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
@@ -1355,6 +1362,8 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
             raise ValueError("The ``channel_output_names`` must be a list of "
                              "strings.")
 
+        self.order_slices = bool(order_slices)
+
         if transform is None:
             self.transform = None
         else:
@@ -1384,17 +1393,41 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
         num_dicom_files = len(dicom_files)
         found_zero = False  # Inconsistent use of indices starting with 0 or 1
         num_dicom_found = 0
-        for file in files:
+        for file_i in range(len(files)):
+            file = files[file_i]
             file_path = os.path.join(channel_path, file)
 
-            try:
-                data = pydicom.dcmread(file_path,
-                                       stop_before_pixels=True,
-                                       force=False,
-                                       specific_tags=["InstanceNumber"])
+            if self.order_slices:
+                try:
+                    data = pydicom.dcmread(file_path,
+                                           stop_before_pixels=True,
+                                           force=False,
+                                           specific_tags=["InstanceNumber"])
 
-                if hasattr(data, "InstanceNumber"):
-                    slice_index = data.InstanceNumber
+                    if hasattr(data, "InstanceNumber"):
+                        slice_index = data.InstanceNumber
+                        dicom_files[slice_index] = file
+
+                        if slice_index == 0:
+                            found_zero = True
+
+                        num_dicom_found += 1
+                    else:
+                        raise RuntimeError('Dicom files must have the '
+                                           '"InstanceNumber" tag when read in '
+                                           'order.')
+
+                except pydicom.errors.InvalidDicomError:
+                    pass  # Skip file if not a DICOM file
+
+            else:  # Read files in whatever order the files are listed in
+                try:
+                    fp = open(file_path, "rb")
+
+                    # Check if valid Dicom file.
+                    pydicom.filereader.read_preamble(fp, False)
+
+                    slice_index = file_i
                     dicom_files[slice_index] = file
 
                     if slice_index == 0:
@@ -1402,8 +1435,11 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
 
                     num_dicom_found += 1
 
-            except pydicom.errors.InvalidDicomError:
-                pass  # Skip file if not a DICOM file
+                except pydicom.errors.InvalidDicomError:
+                    pass  # Skip file if not a DICOM file
+
+                finally:
+                    fp.close()
 
         # Remove first or last, depending on indexing starting with 0 or 1
         if found_zero:
@@ -1474,6 +1510,7 @@ class Dicom3DDataset(DicomDataset):
                  exact_image_names=True,
                  channel_names=None,
                  channel_output_names=None,
+                 order_slices=True,
                  transform=None,
                  cache_size=None,
                  data_format=None):
@@ -1519,6 +1556,12 @@ class Dicom3DDataset(DicomDataset):
             found using ``channel_names``. If ``channel_names`` is also None,
             then a ``ValueError`` exception is raised.
 
+        order_slices : bool, optional
+            Whether or not the read slices should be put in order. Not putting
+            them in order is faster than putting them in order, and the
+            difference may be noticable when many files are processed. Default
+            is ``True``, read the files in order.
+
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
             which means to not apply any transform.
@@ -1545,6 +1588,7 @@ class Dicom3DDataset(DicomDataset):
                          exact_image_names=exact_image_names,
                          channel_names=channel_names,
                          channel_output_names=channel_output_names,
+                         order_slices=order_slices,
                          transform=transform,
                          cache_size=cache_size,
                          data_format=data_format)
@@ -1768,6 +1812,7 @@ class Dicom2DDataset(DicomDataset):
                  exact_image_names=True,
                  channel_names=None,
                  channel_output_names=None,
+                 order_slices=True,
                  transform=None,
                  cache_size=None,
                  data_format=None):
@@ -1814,6 +1859,12 @@ class Dicom2DDataset(DicomDataset):
             found using ``channel_names``. If ``channel_names`` is also None,
             then a ``ValueError`` exception is raised.
 
+        order_slices : bool, optional
+            Whether or not the read slices should be put in order. Not putting
+            them in order is faster than putting them in order, and the
+            difference may be noticable when many files are processed. Default
+            is ``True``, read the files in order.
+
         transform : callable, optional
             Custom transform to apply to each 2-dimensional image. Default is
             ``None``, which means to not apply any transform.
@@ -1840,6 +1891,7 @@ class Dicom2DDataset(DicomDataset):
                          exact_image_names=exact_image_names,
                          channel_names=channel_names,
                          channel_output_names=channel_output_names,
+                         order_slices=order_slices,
                          transform=transform,
                          cache_size=cache_size,
                          data_format=data_format)

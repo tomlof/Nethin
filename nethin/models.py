@@ -314,6 +314,28 @@ class BaseModel(six.with_metaclass(abc.ABCMeta, object)):
         """
         return self.model.get_weights()
 
+    def summary(self, line_length=None, positions=None, print_fn=None):
+        """Prints a string summary of the network.
+
+        Parameters
+        ----------
+        line_length : int, optional
+            Total length of printed lines (e.g. set this to adapt the display
+            to different terminal window sizes).
+
+        positions : list of float, optional
+            Relative or absolute positions of log elements in each line. If not
+            provided, defaults to `[.33, .55, .67, 1.]`.
+
+        print_fn: Callable, optional
+            Print function to use. It will be called on each line of the
+            summary. You can set it to a custom function in order to capture
+            the string summary. It defaults to `print` (prints to stdout).
+        """
+        return self.model.summary(line_length=line_length,
+                                  positions=positions,
+                                  print_fn=print_fn)
+
     def compile(self,
                 optimizer,
                 loss,
@@ -2139,6 +2161,9 @@ class UNet(BaseModel):
                                   kernel_regularizer=kernel_regularizer_i,
                                   bias_regularizer=bias_regularizer_i)(x)
 
+            if self.use_batch_normalization:
+                x = BatchNormalization(axis=self._axis)(x)
+
             x = activation_function_i(x)
 
         # Build decoding part (expansive path)
@@ -2241,6 +2266,9 @@ class UNet(BaseModel):
                                     bias_initializer=bias_initializer_i,
                                     kernel_regularizer=kernel_regularizer_i,
                                     bias_regularizer=bias_regularizer_i)(x)
+
+                if self.use_batch_normalization:
+                    x = BatchNormalization(axis=self._axis)(x)
 
                 x = activation_function_i(x)
 

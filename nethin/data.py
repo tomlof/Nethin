@@ -695,7 +695,29 @@ except (ImportError):  # Copy of PyTorch code
             return len(self.batch_sampler)
 
 
-class SQLiteDataset(Dataset):
+class BaseDataset(with_metaclass(abc.ABCMeta, Dataset)):
+    """Base class for datasets.
+
+    Parameters
+    ----------
+    transform : callable, optional
+        Custom transform to apply to each volume. Default is ``None``, which
+        means to not apply any transform.
+    """
+    def __init__(self, transform=None, **kwargs):
+
+        super().__init__(**kwargs)
+
+        if transform is None:
+            self.transform = None
+        else:
+            if callable(transform):
+                self.transform = transform
+            else:
+                raise ValueError('``transform`` must be callable.')
+
+
+class SQLiteDataset(BaseDataset):
     """A dataset defined in an SQLite database. The table is assumed to be
     called "Data", and have the columns:
 
@@ -712,32 +734,34 @@ class SQLiteDataset(Dataset):
         Type TEXT  -- "input" or "output"
         Class TEXT  -- "scalar" or "tensor"
         Data BLOB  -- The actual data in little endian byte order
+
+    Parameters
+    ----------
+    sqlite_file : str
+        Path to the SQLite database to read from.
+
+    form : str, optional
+        Whether to read one slice at the time (2d) or one volume image at
+        the time (3d). Default is 2d, one slice at the time is read.
+
+    transform : callable, optional
+        Transform to apply to each slice. Will always be applied to each
+        slice, regardless of the value of ``form``. See ``transform_3d``
+        for more information.
+
+    transform_3d : callable, optional
+        Transform to apply to each volume image. Will only be applied if
+        ``form="3d"``, and if so, it will be applied after ``transform``
+        has been applied to each slice first.
     """
     def __init__(self,
                  sqlite_file,
                  form="2d",
                  transform=None,
                  transform_3d=None):
-        """
-        Parameters
-        ----------
-        sqlite_file : str
-            Path to the SQLite database to read from.
 
-        form : str, optional
-            Whether to read one slice at the time (2d) or one volume image at
-            the time (3d). Default is 2d, one slice at the time is read.
+        super().__init__(transform=transform)
 
-        transform : callable, optional
-            Transform to apply to each slice. Will always be applied to each
-            slice, regardless of the value of ``form``. See ``transform_3d``
-            for more information.
-
-        transform_3d : callable, optional
-            Transform to apply to each volume image. Will only be applied if
-            ``form="3d"``, and if so, it will be applied after ``transform``
-            has been applied to each slice first.
-        """
         if not _HAS_PANDAS:
             raise RuntimeError("SQLiteDataset requires the Pandas package to "
                                "work.")
@@ -752,7 +776,6 @@ class SQLiteDataset(Dataset):
             raise ValueError('Argument "form" must be one of "2d" or "3d".')
         self.form = form
 
-        self.transform = transform
         self.transform_3d = transform_3d
 
         self._metadata = None
@@ -1220,7 +1243,7 @@ class SQLiteDataset(Dataset):
         return tensor
 
 
-class DicomDataset(with_metaclass(abc.ABCMeta, object)):
+class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
     r"""Base class for Dicom datasets.
     """
     def __init__(self,
@@ -1302,6 +1325,8 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
             value found in your Keras config file at `~/.keras/keras.json`. If
             you never set it, then it will be "channels_last".
         """
+        super().__init__(transform=transform)
+
         if not _HAS_PYDICOM:
             raise RuntimeError('The "pydicom" package is not available.')
 
@@ -1363,14 +1388,6 @@ class DicomDataset(with_metaclass(abc.ABCMeta, object)):
                              "strings.")
 
         self.order_slices = bool(order_slices)
-
-        if transform is None:
-            self.transform = None
-        else:
-            if callable(transform):
-                self.transform = transform
-            else:
-                raise ValueError('``transform`` must be callable.')
 
         if cache_size is None:
             self.cache_size = None
@@ -1503,6 +1520,74 @@ class Dicom3DDataset(DicomDataset):
     files cannot be read and an exception will be raised.
 
     This dataset requires that the ``pydicom`` package be installed.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the images. The subdirectories of
+        this directory represents (and contains) the 3-dimensional images.
+
+    image_names : list of str, optional
+        The subdirectories to extract files from below the ``dir_path``
+        directory. Every element of this list corresponds to an image that
+        will be read. If a subdirectory is not in this list, it will not
+        be read. If ``exact_image_name`` is ``True``, the elements may be
+        regular expressions. Default is ``None``, which means to read all
+        subdirectories.
+
+    exact_image_names : bool, optional
+        Whether or not to interpret the elements of ``image_names`` as
+        regular expressions or not. If ``True``, the names will not be
+        interpreted as regular expressions, but will be interpreted as
+        constant exact strings; and if ``False``, the names will be
+        interpreted as regular expressions. Default is ``True``, do not
+        interpret as regular expressions.
+
+    channel_names : list of str or list of str, optional
+        The inner strings or lists corresponds to directory names or
+        regular expressions defining the names of the subdirectories under
+        ``image_names`` that corresponds to channels of this image. Every
+        outer element of this list corresponds to a channel of the images
+        defined by ``image_names``. The elements of the inner lists are
+        alternative names for the subdirectories. If more than one
+        subdirectory name matches, only the first one found will be used.
+        Default is ``None``, which means to read all channels (note that
+        this may mean that the images have different channels, if their
+        subdirectories mismatch.)
+
+    channel_output_names : list of str, optional
+        Custom names for the output images. The output is a ``dict``, and
+        the keys will be the elements of ``channel_output_names``. If
+        ``None``, the names will instead be the corresponding channel names
+        found using ``channel_names``. If ``channel_names`` is also None,
+        then a ``ValueError`` exception is raised.
+
+    order_slices : bool, optional
+        Whether or not the read slices should be put in order. Not putting
+        them in order is faster than putting them in order, and the
+        difference may be noticable when many files are processed. Default
+        is ``True``, read the files in order.
+
+    transform : callable, optional
+        Custom transform to apply to each volume. Default is ``None``,
+        which means to not apply any transform.
+
+    cache_size : float or int, optional
+        The cache size in gigabytes (GiB, 2**30 bytes). If a value is
+        given, it must correspond to at least one byte (``1 / 2**30``). The
+        default value is ``None``, which means to not use a cache (nothing
+        is stored). Elements are dropped from the cache whenever the stored
+        data reaches ``cache_size``, the policy is first in first out (old
+        elements are dropped first).
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering
+        of the dimensions in the inputs. `channels_last` corresponds to
+        inputs with shape `(batch, height, width, channels)` while
+        `channels_first` corresponds to inputs with shape `(batch,
+        channels, height, width)`. It defaults to the `image_data_format`
+        value found in your Keras config file at `~/.keras/keras.json`. If
+        you never set it, then it will be "channels_last".
     """
     def __init__(self,
                  dir_path,
@@ -1514,75 +1599,7 @@ class Dicom3DDataset(DicomDataset):
                  transform=None,
                  cache_size=None,
                  data_format=None):
-        """
-        Parameters
-        ----------
-        dir_path : str
-            Path to the directory containing the images. The subdirectories of
-            this directory represents (and contains) the 3-dimensional images.
 
-        image_names : list of str, optional
-            The subdirectories to extract files from below the ``dir_path``
-            directory. Every element of this list corresponds to an image that
-            will be read. If a subdirectory is not in this list, it will not
-            be read. If ``exact_image_name`` is ``True``, the elements may be
-            regular expressions. Default is ``None``, which means to read all
-            subdirectories.
-
-        exact_image_names : bool, optional
-            Whether or not to interpret the elements of ``image_names`` as
-            regular expressions or not. If ``True``, the names will not be
-            interpreted as regular expressions, but will be interpreted as
-            constant exact strings; and if ``False``, the names will be
-            interpreted as regular expressions. Default is ``True``, do not
-            interpret as regular expressions.
-
-        channel_names : list of str or list of str, optional
-            The inner strings or lists corresponds to directory names or
-            regular expressions defining the names of the subdirectories under
-            ``image_names`` that corresponds to channels of this image. Every
-            outer element of this list corresponds to a channel of the images
-            defined by ``image_names``. The elements of the inner lists are
-            alternative names for the subdirectories. If more than one
-            subdirectory name matches, only the first one found will be used.
-            Default is ``None``, which means to read all channels (note that
-            this may mean that the images have different channels, if their
-            subdirectories mismatch.)
-
-        channel_output_names : list of str, optional
-            Custom names for the output images. The output is a ``dict``, and
-            the keys will be the elements of ``channel_output_names``. If
-            ``None``, the names will instead be the corresponding channel names
-            found using ``channel_names``. If ``channel_names`` is also None,
-            then a ``ValueError`` exception is raised.
-
-        order_slices : bool, optional
-            Whether or not the read slices should be put in order. Not putting
-            them in order is faster than putting them in order, and the
-            difference may be noticable when many files are processed. Default
-            is ``True``, read the files in order.
-
-        transform : callable, optional
-            Custom transform to apply to each volume. Default is ``None``,
-            which means to not apply any transform.
-
-        cache_size : float or int, optional
-            The cache size in gigabytes (GiB, 2**30 bytes). If a value is
-            given, it must correspond to at least one byte (``1 / 2**30``). The
-            default value is ``None``, which means to not use a cache (nothing
-            is stored). Elements are dropped from the cache whenever the stored
-            data reaches ``cache_size``, the policy is first in first out (old
-            elements are dropped first).
-
-        data_format : str, optional
-            One of `channels_last` (default) or `channels_first`. The ordering
-            of the dimensions in the inputs. `channels_last` corresponds to
-            inputs with shape `(batch, height, width, channels)` while
-            `channels_first` corresponds to inputs with shape `(batch,
-            channels, height, width)`. It defaults to the `image_data_format`
-            value found in your Keras config file at `~/.keras/keras.json`. If
-            you never set it, then it will be "channels_last".
-        """
         super().__init__(dir_path,
                          image_names=image_names,
                          exact_image_names=exact_image_names,
@@ -1805,6 +1822,75 @@ class Dicom2DDataset(DicomDataset):
     files cannot be read and an exception will be raised.
 
     This dataset requires that the ``pydicom`` package be installed.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the images. The subdirectories of
+        this directory represents (and contains) the 2-dimenaional images
+        (e.g., slices).
+
+    image_names : list of str, optional
+        The subdirectories to extract files from below the ``dir_path``
+        directory. Every element of this list corresponds to an image that
+        will be read. If a subdirectory is not in this list, it will not
+        be read. If ``exact_image_name`` is ``True``, the elements may be
+        regular expressions. Default is ``None``, which means to read all
+        subdirectories.
+
+    exact_image_names : bool, optional
+        Whether or not to interpret the elements of ``image_names`` as
+        regular expressions or not. If ``True``, the names will not be
+        interpreted as regular expressions, but will be interpreted as
+        constant exact strings; and if ``False``, the names will be
+        interpreted as regular expressions. Default is ``True``, do not
+        interpret as regular expressions.
+
+    channel_names : list of str or list of str, optional
+        The inner strings or lists corresponds to directory names or
+        regular expressions defining the names of the subdirectories under
+        ``image_names`` that corresponds to channels of this image. Every
+        outer element of this list corresponds to a channel of the images
+        defined by ``image_names``. The elements of the inner lists are
+        alternative names for the subdirectories. If more than one
+        subdirectory name matches, only the first one found will be used.
+        Default is ``None``, which means to read all channels (note that
+        this may mean that the images end up with different channels, if
+        their subdirectories mismatch).
+
+    channel_output_names : list of str, optional
+        Custom names for the output images. The output is a ``dict``, and
+        the keys will be the elements of ``channel_output_names``. If
+        ``None``, the names will instead be the corresponding channel names
+        found using ``channel_names``. If ``channel_names`` is also None,
+        then a ``ValueError`` exception is raised.
+
+    order_slices : bool, optional
+        Whether or not the read slices should be put in order. Not putting
+        them in order is faster than putting them in order, and the
+        difference may be noticable when many files are processed. Default
+        is ``True``, read the files in order.
+
+    transform : callable, optional
+        Custom transform to apply to each 2-dimensional image. Default is
+        ``None``, which means to not apply any transform.
+
+    cache_size : float or int, optional
+        The cache size in gigabytes (GiB, 2**30 bytes). If a value is
+        given, it must correspond to at least one byte (``1 / 2**30``). The
+        default value is ``None``, which means to not use a cache (nothing
+        is stored). Elements are dropped from the cache whenever the stored
+        data reaches ``cache_size``, the policy is first in first out (old
+        elements are dropped first).
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering
+        of the dimensions in the inputs. `channels_last` corresponds to
+        inputs with shape `(batch, height, width, channels)` while
+        `channels_first` corresponds to inputs with shape `(batch,
+        channels, height, width)`. It defaults to the `image_data_format`
+        value found in your Keras config file at `~/.keras/keras.json`. If
+        you never set it, then it will be "channels_last".
     """
     def __init__(self,
                  dir_path,
@@ -1816,76 +1902,7 @@ class Dicom2DDataset(DicomDataset):
                  transform=None,
                  cache_size=None,
                  data_format=None):
-        """
-        Parameters
-        ----------
-        dir_path : str
-            Path to the directory containing the images. The subdirectories of
-            this directory represents (and contains) the 2-dimenaional images
-            (e.g., slices).
 
-        image_names : list of str, optional
-            The subdirectories to extract files from below the ``dir_path``
-            directory. Every element of this list corresponds to an image that
-            will be read. If a subdirectory is not in this list, it will not
-            be read. If ``exact_image_name`` is ``True``, the elements may be
-            regular expressions. Default is ``None``, which means to read all
-            subdirectories.
-
-        exact_image_names : bool, optional
-            Whether or not to interpret the elements of ``image_names`` as
-            regular expressions or not. If ``True``, the names will not be
-            interpreted as regular expressions, but will be interpreted as
-            constant exact strings; and if ``False``, the names will be
-            interpreted as regular expressions. Default is ``True``, do not
-            interpret as regular expressions.
-
-        channel_names : list of str or list of str, optional
-            The inner strings or lists corresponds to directory names or
-            regular expressions defining the names of the subdirectories under
-            ``image_names`` that corresponds to channels of this image. Every
-            outer element of this list corresponds to a channel of the images
-            defined by ``image_names``. The elements of the inner lists are
-            alternative names for the subdirectories. If more than one
-            subdirectory name matches, only the first one found will be used.
-            Default is ``None``, which means to read all channels (note that
-            this may mean that the images end up with different channels, if
-            their subdirectories mismatch).
-
-        channel_output_names : list of str, optional
-            Custom names for the output images. The output is a ``dict``, and
-            the keys will be the elements of ``channel_output_names``. If
-            ``None``, the names will instead be the corresponding channel names
-            found using ``channel_names``. If ``channel_names`` is also None,
-            then a ``ValueError`` exception is raised.
-
-        order_slices : bool, optional
-            Whether or not the read slices should be put in order. Not putting
-            them in order is faster than putting them in order, and the
-            difference may be noticable when many files are processed. Default
-            is ``True``, read the files in order.
-
-        transform : callable, optional
-            Custom transform to apply to each 2-dimensional image. Default is
-            ``None``, which means to not apply any transform.
-
-        cache_size : float or int, optional
-            The cache size in gigabytes (GiB, 2**30 bytes). If a value is
-            given, it must correspond to at least one byte (``1 / 2**30``). The
-            default value is ``None``, which means to not use a cache (nothing
-            is stored). Elements are dropped from the cache whenever the stored
-            data reaches ``cache_size``, the policy is first in first out (old
-            elements are dropped first).
-
-        data_format : str, optional
-            One of `channels_last` (default) or `channels_first`. The ordering
-            of the dimensions in the inputs. `channels_last` corresponds to
-            inputs with shape `(batch, height, width, channels)` while
-            `channels_first` corresponds to inputs with shape `(batch,
-            channels, height, width)`. It defaults to the `image_data_format`
-            value found in your Keras config file at `~/.keras/keras.json`. If
-            you never set it, then it will be "channels_last".
-        """
         super().__init__(dir_path,
                          image_names=image_names,
                          exact_image_names=exact_image_names,
@@ -2065,6 +2082,110 @@ class Dicom2DDataset(DicomDataset):
 
     def __len__(self):
         return len(self._all_images)
+
+
+class NumpyDataset(BaseDataset):
+    r"""A dataset abstraction over a numpy array.
+
+    The samples are assumed to be organised along the first dimension, such
+    that ``samples[i, ...]`` would give a single sample of shape
+    ``(1, samples.shape[1:])``.
+
+    Parameters
+    ----------
+    samples : list or tuple of numpy array or numpy array
+        The numpy array(s) with samples to draw from. The array(s) has shape
+        ``(N, ...)``, where ``N`` is the total number of samples, and all
+        other dimensions define the shape of the samples. If a tuple/list, the
+        different arrays must have the same first dimension.
+
+    transform : callable, optional
+        Custom transform to apply to each sample. The transform will be fed
+        with a tuple of single samples, i.e. the input is ``(X1, ..., Xn)``,
+        for ``n`` samples, and where each ``Xi`` has shape ``(1, *shape)`` when
+        ``samples`` has shape ``(N, *shape)``. Default is ``None``, which means
+        to not apply any transform.
+
+    Examples
+    --------
+    >>> from nethin.data import NumpyDataset
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>>
+    >>> X = np.random.randn(3, 2)
+    >>> X  # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.49671415, -0.1382643 ],
+           [ 0.64768854,  1.52302986],
+           [-0.23415337, -0.23413696]])
+    >>> ds = NumpyDataset(X)
+    >>> ds[0].shape
+    (1, 2)
+    >>> for batch in iter(ds):
+    >>>     print(batch)  # doctest: +NORMALIZE_WHITESPACE
+    [[0.49671415 -0.1382643]]
+    [[0.64768854 1.52302986]]
+    [[-0.23415337 -0.23413696]]
+    >>>
+    >>> np.random.seed(42)
+    >>> X = np.random.randn(3, 1, 2)
+    >>> y = np.random.randint(0, 2, size=(3, 1))
+    >>> y
+    array([[0],
+           [0],
+           [1]])
+    >>> ds = NumpyDataset((X, y))
+    >>> for batch in iter(ds):
+    >>>     print(batch)  # doctest: +NORMALIZE_WHITESPACE
+    (array([[[ 0.49671415, -0.1382643 ]]]), array([[0]]))
+    (array([[[0.64768854, 1.52302986]]]), array([[0]]))
+    (array([[[-0.23415337, -0.23413696]]]), array([[1]]))
+    """
+    def __init__(self,
+                 samples,
+                 transform=None):
+
+        super().__init__(transform=transform)
+
+        self._input_list = True
+        if not isinstance(samples, (tuple, list)):
+            samples = [samples]
+            self._input_list = False
+
+        for sample in samples:
+            if not isinstance(sample, (np.ndarray, np.generic)):
+                raise ValueError("``samples`` is not, or does not contain "
+                                 "numpy arrays.")
+
+            if sample.ndim < 2:
+                raise ValueError("The numpy array(s) must be at least "
+                                 "2-dimensional.")
+
+        self.samples = samples
+
+    def __getitem__(self, index):
+
+        samples_ = []
+        for i in range(len(self.samples)):
+            sample_i = self.samples[i]
+            sample_i = sample_i[index, ...]
+
+            sample_i = sample_i[np.newaxis, ...]  # Add batch dimension
+
+            samples_.append(sample_i)
+
+        samples_ = tuple(samples_)
+
+        # Perform transform last, then augmentation will work as well
+        if self.transform is not None:
+            samples_ = self.transform(samples_)
+
+        if not self._input_list:
+            return samples_[0]
+        else:
+            return samples_
+
+    def __len__(self):
+        return self.samples[0].shape[0]
 
 
 if _HAS_GENERATOR:

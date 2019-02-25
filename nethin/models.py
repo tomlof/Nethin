@@ -769,6 +769,14 @@ class ConvolutionalNetwork(BaseModel):
         then it must have the same length as ``num_conv_layers``. Default
         is ``"relu"``.
 
+    kernel_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the convolution weights.
+
+    bias_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the convolution bias vectors.
+
     dense_sizes : tuple of int, optional
         The number of dense layers following the convolution. Default is
         ``(1,)``, which means to output a single value.
@@ -859,6 +867,8 @@ class ConvolutionalNetwork(BaseModel):
                  filter_sizes=(3, 3, 3, 3, 3),
                  subsample=(True, True, True, True, True),
                  activations="relu",
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
                  dense_sizes=(1,),
                  dense_activations=("sigmoid",),
                  use_batch_normalization=True,
@@ -921,6 +931,9 @@ class ConvolutionalNetwork(BaseModel):
         else:
             raise ValueError("``activations`` must be a str, or a tuple of "
                              "str or ``Activation``.")
+
+        self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
+        self.bias_regularizer = keras.regularizers.get(bias_regularizer)
 
         self.dense_sizes = tuple([int(s) for s in dense_sizes])
 
@@ -993,22 +1006,31 @@ class ConvolutionalNetwork(BaseModel):
 
             if self._input_dim == 1:
                 if self.data_format == "channels_last":
-                    x = Convolution1D(num_filters_i,
-                                      (filter_size_i,),
-                                      strides=(1,),
-                                      padding="same")(x)
+                    x = Convolution1D(
+                            num_filters_i,
+                            (filter_size_i,),
+                            strides=(1,),
+                            padding="same",
+                            kernel_regularizer=self.kernel_regularizer,
+                            bias_regularizer=self.bias_regularizer)(x)
                 else:
-                    x = layers.Convolution1D(num_filters_i,
-                                             (filter_size_i,),
-                                             strides=(1,),
-                                             padding="same",
-                                             data_format=self.data_format)(x)
+                    x = layers.Convolution1D(
+                            num_filters_i,
+                            (filter_size_i,),
+                            strides=(1,),
+                            padding="same",
+                            data_format=self.data_format,
+                            kernel_regularizer=self.kernel_regularizer,
+                            bias_regularizer=self.bias_regularizer)(x)
             else:  # self._input_dim = 2
-                x = Convolution2D(num_filters_i,
-                                  (filter_size_i, filter_size_i),
-                                  strides=(1, 1),
-                                  padding="same",
-                                  data_format=self.data_format)(x)
+                x = Convolution2D(
+                        num_filters_i,
+                        (filter_size_i, filter_size_i),
+                        strides=(1, 1),
+                        padding="same",
+                        data_format=self.data_format,
+                        kernel_regularizer=self.kernel_regularizer,
+                        bias_regularizer=self.bias_regularizer)(x)
 
             if self.use_batch_normalization:
                 x = BatchNormalization(axis=self._axis)(x)
@@ -1036,23 +1058,31 @@ class ConvolutionalNetwork(BaseModel):
                 else:
                     if self._input_dim == 1:
                         if self.data_format == "channels_last":
-                            x = Convolution1D(num_filters_i,
-                                              (3,),
-                                              strides=(2,),
-                                              padding="same")(x)
+                            x = Convolution1D(
+                                    num_filters_i,
+                                    (3,),
+                                    strides=(2,),
+                                    padding="same",
+                                    kernel_regularizer=self.kernel_regularizer,
+                                    bias_regularizer=self.bias_regularizer)(x)
                         else:
                             x = layers.Convolution1D(
-                                            num_filters_i,
-                                            (3,),
-                                            strides=(2,),
-                                            padding="same",
-                                            data_format=self.data_format)(x)
+                                    num_filters_i,
+                                    (3,),
+                                    strides=(2,),
+                                    padding="same",
+                                    data_format=self.data_format,
+                                    kernel_regularizer=self.kernel_regularizer,
+                                    bias_regularizer=self.bias_regularizer)(x)
                     else:  # self._input_dim = 2
-                        x = Convolution2D(num_filters_i,
-                                          (3, 3),
-                                          strides=(2, 2),
-                                          padding="same",
-                                          data_format=self.data_format)(x)
+                        x = Convolution2D(
+                                num_filters_i,
+                                (3, 3),
+                                strides=(2, 2),
+                                padding="same",
+                                data_format=self.data_format,
+                                kernel_regularizer=self.kernel_regularizer,
+                                bias_regularizer=self.bias_regularizer)(x)
 
         if len(self.dense_sizes) > 0:
             x = Flatten()(x)
@@ -1066,6 +1096,7 @@ class ConvolutionalNetwork(BaseModel):
                 if activation_i is not None:
                     x = activation_i(x)
 
+                # Don't apply dropout to the last layer
                 if dropout_rate_i > 0.0 and (i < len(self.dense_sizes) - 1):
                     x = Dropout(dropout_rate_i)(x)
 

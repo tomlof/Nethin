@@ -10,8 +10,10 @@ Created on Sat Dec  2 22:02:23 2017
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-import keras.backend as K
+import numpy as np
 
-__all__ = ["NETHIN_SAVE_KEY"]
+__all__ = ["NETHIN_SAVE_KEY", "MACHINE_EPSILON"]
 
 NETHIN_SAVE_KEY = "_nethin_model_config"
+
+MACHINE_EPSILON = np.finfo(np.float64).eps

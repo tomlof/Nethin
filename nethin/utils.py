@@ -50,11 +50,12 @@ from keras.layers import Activation
 
 __all__ = ["Helper", "get_device_string", "with_device",
            "serialize_activations", "deserialize_activations",
-           "to_snake_case",
-           "get_json_type",
+           "serialize_array", "deserialize_array",
+           "to_snake_case", "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
-           "simple_bezier", "dynamic_histogram_warping",
-           "vector_median",
+           "normalize_random_state",
+           "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
+           "vector_median", "sizeof",
            "ExceedingThresholdException"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
@@ -686,12 +687,12 @@ def normalize_str(value, n, name):
     return value_tuple
 
 
-def normalize_random_state(random_state, rand_functions=[]):
+def normalize_random_state(random_state=None, rand_functions=[]):
     """Tests a given random_state argument.
 
     Parameters
     ----------
-    random_state : int, float, array_like or numpy.random.RandomState
+    random_state : int, float, array_like or numpy.random.RandomState, optional
         A random state to use when sampling pseudo-random numbers. If int,
         float or array_like, a new random state is created with the provided
         value as seed. If None, the default numpy random state (np.random) is
@@ -718,25 +719,35 @@ def normalize_random_state(random_state, rand_functions=[]):
     >>> utils.normalize_random_state(42)  # doctest: +ELLIPSIS
     <mtrand.RandomState ...>
     """
+    done = False    
     if random_state is None:
-        random_state = np.random.random.__self__
+        random_state = np.random.random.__self__  # Numpy built-in
+        done = True
+
     else:
-        if isinstance(random_state, (int, float, np.ndarray)):
+        if isinstance(random_state, (numbers.Number, int, float)):
             random_state = np.random.RandomState(seed=random_state)
+            done = True
+
+        elif isinstance(random_state, (np.ndarray,)):
+
+            # Try to use random_state as a seed. May crash here..
+            random_state = np.random.RandomState(seed=random_state)
+            done = True
+
         elif isinstance(random_state, np.random.RandomState):
-            random_state = random_state
-        elif len(rand_functions) > 0:
-            has_all = True
-            for rand_function in rand_functions:
-                if not hasattr(random_state, rand_function):
-                    has_all = False
-                    break
-            if has_all:
-                random_state = random_state
-            else:  # May crash here..
-                random_state = np.random.RandomState(seed=random_state)
-        else:  # May crash here..
-            random_state = np.random.RandomState(seed=random_state)
+            # Do nothing, we can use random_state directly
+            done = True
+
+        elif (rand_functions is not None) and (len(rand_functions) > 0):
+
+            if all([hasattr(random_state, func) for func in rand_functions]):
+                # Do nothing, we can use random_state directly
+                done = True
+
+    if not done:
+        # Try to use random_state as a seed. May crash here..
+        random_state = np.random.RandomState(seed=random_state)
 
     return random_state
 
@@ -1364,6 +1375,10 @@ def sizeof(o, use_external=True):
     return size
 
 
+class ExceedingThresholdException(Exception):
+    pass
+
+
 class RangeType(object):
 
     def __init__(self, start=None, stop=None, dtype=float, size=None):
@@ -1553,10 +1568,6 @@ class CartesianProduct(object):
     def add_constraints(self, contraints):
         for key in contraints:
             self.constraints[key[0]] = [key[1], contraints[key]]
-
-
-class ExceedingThresholdException(Exception):
-    pass
 
 
 if __name__ == "__main__":

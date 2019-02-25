@@ -1422,7 +1422,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
                                            specific_tags=["InstanceNumber"])
 
                     if hasattr(data, "InstanceNumber"):
-                        slice_index = data.InstanceNumber
+                        slice_index = int(data.InstanceNumber)
                         dicom_files[slice_index] = file
 
                         if slice_index == 0:
@@ -1955,10 +1955,16 @@ class Dicom2DDataset(DicomDataset):
             # "~/data/Patient 1"
             image_path = os.path.join(dir_path, image_name)
             channel_dirs_ = os.listdir(image_path)  # ["CT", "MR"]
-            if channel_names is None:
+
+            if len(channel_names) == 1 and channel_names[0] == "":
+                # No channels, images in this directory
+                channel_dirs[image_name].append("")
+
+            elif channel_names is None:
                 for channel in channel_dirs_:  # channel = "CT"
                     # channel_dirs = ["CT"]
                     channel_dirs[image_name].append(channel)
+
             else:
                 # channel_name = ["CT.*", "[CT].*"]
                 for channel_name in channel_names:

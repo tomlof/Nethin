@@ -1414,6 +1414,10 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
             file = files[file_i]
             file_path = os.path.join(channel_path, file)
 
+            # Skip this one if it is not a regular file
+            if not os.path.isfile(file_path):
+                continue
+
             if self.order_slices:
                 try:
                     data = pydicom.dcmread(file_path,
@@ -1444,7 +1448,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
                     # Check if valid Dicom file.
                     pydicom.filereader.read_preamble(fp, False)
 
-                    slice_index = file_i
+                    slice_index = num_dicom_found  # file_i
                     dicom_files[slice_index] = file
 
                     if slice_index == 0:

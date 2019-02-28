@@ -8,6 +8,7 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
+from nethin import augmentation
 from nethin import consts
 from nethin import data
 from nethin import models
@@ -18,5 +19,5 @@ from nethin import utils
 
 __version__ = "0.0.1"
 
-__all__ = ["consts", "data", "models", "normalization", "padding", "trainers",
-           "utils"]
+__all__ = ["augmentation", "consts", "data", "models", "normalization",
+           "padding", "trainers", "utils"]

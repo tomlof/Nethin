@@ -53,7 +53,8 @@ __all__ = ["Helper", "get_device_string", "with_device",
            "serialize_array", "deserialize_array",
            "to_snake_case", "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
-           "normalize_random_state",
+           "normalize_random_state", "normalize_callables",
+           "apply_callables",
            "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
            "vector_median", "sizeof",
            "ExceedingThresholdException"]
@@ -750,6 +751,43 @@ def normalize_random_state(random_state=None, rand_functions=[]):
         random_state = np.random.RandomState(seed=random_state)
 
     return random_state
+
+
+def normalize_callables(callables):
+    """Normalize callable arguments.
+
+    Parameters
+    ----------
+    callables : Callable or list of Callable
+        The callable(s) to normalise. If a callable, returns a list with that
+        callable. If a list, makes sure they are all callables.
+    """
+    if callables is not None:
+        if callable(callables):
+            return [callables]
+
+        elif isinstance(callables, list) and \
+                all([callable(c) for c in callables]):
+            return callables
+
+        else:
+            raise ValueError("The 'callables' should be either a callable or "
+                             "a list of callables.")
+    else:
+        return []
+
+
+def apply_callables(callables, *args, **kwargs):
+    """Apply a series of callables, and return their ORed results.
+    """
+    done = False
+    if callables:
+        for c in callables:
+            result = c(*args, **kwargs)
+            if result is not None:
+                done = done or result
+
+    return done
 
 
 def simple_bezier(dist,

@@ -14,17 +14,6 @@ import warnings
 import numpy as np
 import scipy.ndimage
 
-# try:
-#     import skimage.transform as transform
-#     _HAS_SKIMAGE = True
-# except (ImportError):
-#     _HAS_SKIMAGE = False
-
-try:
-    from keras.utils.conv_utils import normalize_data_format
-except ImportError:
-    from keras.backend.common import normalize_data_format
-
 __all__ = ["BaseAugmentation",
            "Flip", "Resize", "Rotate", "Crop", "Shear",
            "ImageHistogramShift", "ImageHistogramScale",
@@ -56,6 +45,13 @@ class BaseAugmentation(metaclass=abc.ABCMeta):
     def __init__(self,
                  data_format=None,
                  random_state=None):
+
+        try:
+            # New place
+            from keras.backend.common import normalize_data_format
+        except ImportError:
+            # Old place
+            from keras.utils.conv_utils import normalize_data_format
 
         self.data_format = normalize_data_format(data_format)
 

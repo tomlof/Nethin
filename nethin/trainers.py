@@ -19,11 +19,8 @@ import pickle
 
 import numpy as np
 
-from tensorflow.python.framework.errors_impl import ResourceExhaustedError
-
 import keras.backend as K
-
-import nethin.utils as utils
+# K = utils.LazyImport("keras.backend")  # import keras.backend as K
 
 __all__ = ["BaseTraner", "BasicTrainer", "CVTrainer"]
 
@@ -163,9 +160,6 @@ class BasicTrainer(BaseTraner):
                     inputs = np.array(inputs, dtype=np.float32)
                     outputs = np.array(outputs, dtype=np.float32)
 
-                    # inputs = images[..., :self.input_channels]
-                    # outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
                     loss = self.model_.train_on_batch(inputs, outputs)
 
                     loss_batch_train.append(loss)
@@ -187,8 +181,9 @@ class BasicTrainer(BaseTraner):
                         if batch_it_train >= self.max_iter_train:
                             break
 
-            except (StopIteration) as e:
+            except StopIteration:
                 restart_train = True
+
             self.loss_train_.append(loss_batch_train)
 
             if self.generator_validation is not None:
@@ -204,22 +199,22 @@ class BasicTrainer(BaseTraner):
                         inputs = np.array(inputs, dtype=np.float32)
                         outputs = np.array(outputs, dtype=np.float32)
 
-                        # inputs = images[..., :self.input_channels]
-                        # outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
                         loss = self.model_.test_on_batch(inputs, outputs)
 
                         loss_batch_validation.append(loss)
 
                         if self.verbose:
                             if self.max_iter_validation is None:
-                                print("validation it: %d/%d, batch: %d, loss: %s"
+                                print("validation it: %d/%d, batch: %d, "
+                                      "loss: %s"
                                       % (it + 1, self.max_epochs,
                                          batch_it_validation, str(loss)))
                             else:
-                                print("validation it: %d/%d, batch: %d/%d, loss: %s"
+                                print("validation it: %d/%d, batch: %d/%d, "
+                                      "loss: %s"
                                       % (it + 1, self.max_epochs,
-                                         batch_it_validation, self.max_iter_validation,
+                                         batch_it_validation,
+                                         self.max_iter_validation,
                                          str(loss)))
 
                         batch_it_validation += 1
@@ -228,7 +223,7 @@ class BasicTrainer(BaseTraner):
                             if batch_it_validation >= self.max_iter_validation:
                                 break
 
-                except (StopIteration) as e:
+                except StopIteration:
                     restart_validation = True
 
                 self.loss_validation_.append(loss_batch_validation)
@@ -237,7 +232,7 @@ class BasicTrainer(BaseTraner):
                     try:
                         float(loss_batch_validation[0][0])
                         convertable = True
-                    except:
+                    except Exception:
                         convertable = False
 
                     if convertable and hasattr(self.model_, "save"):
@@ -267,9 +262,6 @@ class BasicTrainer(BaseTraner):
                     inputs = np.array(inputs, dtype=np.float32)
                     outputs = np.array(outputs, dtype=np.float32)
 
-                    # inputs = images[..., :self.input_channels]
-                    # outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
                     loss = self.model_.test_on_batch(inputs, outputs)
 
                     self.loss_test_.append(loss)
@@ -289,7 +281,7 @@ class BasicTrainer(BaseTraner):
                         if batch_it_test >= self.max_iter_test:
                             break
 
-            except (StopIteration) as e:
+            except StopIteration:
                 pass
 
         ret_list = [self.loss_train_]
@@ -365,6 +357,9 @@ class CVTrainer(BaseTraner):
             If there is no previous model, a new one will be created and
             trained. Default is False, create a new model to train.
         """
+        from tensorflow.python.framework.errors_impl \
+            import ResourceExhaustedError
+
         self.loss_train_ = []
         self.loss_validation_ = []
         for cv in range(self._cv_rounds):
@@ -404,9 +399,6 @@ class CVTrainer(BaseTraner):
                         inputs = np.array(inputs, dtype=np.float32)
                         outputs = np.array(outputs, dtype=np.float32)
 
-                        # inputs = images[..., :self.input_channels]
-                        # outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
-
                         loss = self.model_.train_on_batch(inputs, outputs)
 
                         loss_batch_train.append(loss)
@@ -438,34 +430,42 @@ class CVTrainer(BaseTraner):
                                 break
 
                         if self.threshold is not None:
+
+                            def true_fun(x):
+                                return True
+
+                            def none_fun(x):
+                                return None
+
                             if "cv" in self.threshold:
                                 __cv = self.threshold["cv"]
                             else:
-                                __cv = lambda x: True
+                                __cv = true_fun
                             if "it" in self.threshold:
                                 __it = self.threshold["it"]
                             else:
-                                __it = lambda x: True
+                                __it = true_fun
                             if "batch" in self.threshold:
                                 __batch = self.threshold["batch"]
                             else:
-                                __batch = lambda x: True
+                                __batch = true_fun
                             if "loss" in self.threshold:
                                 __loss = self.threshold["loss"]
                             else:
-                                __loss = lambda x: True
+                                __loss = true_fun
                             if "action" in self.threshold:
                                 __action = self.threshold["action"]
                             else:
-                                __action = lambda: None
+                                __action = none_fun
 
                             if __cv(cv) and __it(it) and \
                                     __batch(batch_it_train - 1) and \
                                     __loss(loss):
                                 __action()
 
-                except (StopIteration) as e:
+                except StopIteration:
                     restart_train = True
+
                 loss_train.append(loss_batch_train)
 
                 self.loss_train_.append(loss_train)
@@ -480,9 +480,6 @@ class CVTrainer(BaseTraner):
                         inputs, outputs = next(generator_validation)
                         inputs = np.array(inputs, dtype=np.float32)
                         outputs = np.array(outputs, dtype=np.float32)
-
-                        # inputs = images[..., :self.input_channels]
-                        # outputs = images[..., self.input_channels:self.input_channels + self.output_channels]
 
                         loss = self.model_.test_on_batch(inputs, outputs)
 
@@ -515,8 +512,9 @@ class CVTrainer(BaseTraner):
                             if batch_it_validation >= self.max_iter_validation:
                                 break
 
-                except (StopIteration) as e:
+                except StopIteration:
                     restart_validation = True
+
                 loss_validation.append(loss_batch_validation)
 
             self.loss_validation_.append(loss_validation)

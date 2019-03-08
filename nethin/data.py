@@ -27,11 +27,6 @@ import numpy as np
 from six import with_metaclass
 from scipy.misc import imread, imresize
 
-try:
-    from keras.utils.conv_utils import normalize_data_format
-except ImportError:
-    from keras.backend.common import normalize_data_format
-
 import nethin
 import nethin.utils as utils
 
@@ -1254,6 +1249,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
                  channel_output_names=None,
                  order_slices=True,
                  transform=None,
+                 custom_listdir=None,
                  cache_size=None,
                  data_format=None):
         r"""
@@ -1307,6 +1303,12 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
         transform : callable, optional
             Custom transform to apply to each volume. Default is ``None``,
             which means to not apply any transform.
+
+        custom_listdir : callable, optional
+            Custom function to list all valid files in a directory. Should take
+            a string representation of a directory as input and return a list
+            of valid filenames in that directory. Default is None, which means
+            to use the build-in method for this (built on pydicom).
 
         cache_size : float or int, optional
             The cache size in gigabytes (GiB, 2**30 bytes). If a value is
@@ -1389,6 +1391,11 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
 
         self.order_slices = bool(order_slices)
 
+        if (custom_listdir is not None) and (not callable(custom_listdir)):
+            raise ValueError("The custom_listdir must be either None or a "
+                             "callable.")
+        self.custom_listdir = custom_listdir
+
         if cache_size is None:
             self.cache_size = None
         else:
@@ -1397,6 +1404,7 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
             self._cache_order = list()
             self._cache_cur_size = 0
 
+        from keras.backend.common import normalize_data_format
         self.data_format = normalize_data_format(data_format)
 
         self._filtered_image_names = self._get_image_names()
@@ -1404,6 +1412,10 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
     def _listdir(self, channel_path):
         """Lists all DICOM images in a given folder.
         """
+        # Use the custom function, if there is one.
+        if self.custom_listdir is not None:
+            return self.custom_listdir(self, channel_path)
+
         files = os.listdir(channel_path)
 
         dicom_files = [None] * (len(files) + 1)
@@ -1536,8 +1548,13 @@ class Dicom3DDataset(DicomDataset):
         directory. Every element of this list corresponds to an image that
         will be read. If a subdirectory is not in this list, it will not
         be read. If ``exact_image_name`` is ``True``, the elements may be
-        regular expressions. Default is ``None``, which means to read all
-        subdirectories.
+        regular expressions. If the empty string (``""``), or a string with a
+        single dot (``"."``, interpreted as the current directory) is in the
+        list, it will be interpreted as that the given directory contains the
+        images directly. The string with a dot will not be treated this way if
+        ``exact_image_name`` is ``True``, because then we assume it is the
+        user's regular expression instead. Default is ``None``, which means to
+        read all subdirectories.
 
     exact_image_names : bool, optional
         Whether or not to interpret the elements of ``image_names`` as
@@ -1576,6 +1593,12 @@ class Dicom3DDataset(DicomDataset):
         Custom transform to apply to each volume. Default is ``None``,
         which means to not apply any transform.
 
+    custom_reader : callable, optional
+        A custom image reader. The reader takes a list of strings, with the
+        file names of the slices, and returns a numpy array with the slices
+        concatenated along the first dimension (``axis=0``). Default is None,
+        which means to use the built-in reader (based on pydicom).
+
     cache_size : float or int, optional
         The cache size in gigabytes (GiB, 2**30 bytes). If a value is
         given, it must correspond to at least one byte (``1 / 2**30``). The
@@ -1601,6 +1624,7 @@ class Dicom3DDataset(DicomDataset):
                  channel_output_names=None,
                  order_slices=True,
                  transform=None,
+                 custom_reader=None,
                  cache_size=None,
                  data_format=None):
 
@@ -1614,12 +1638,28 @@ class Dicom3DDataset(DicomDataset):
                          cache_size=cache_size,
                          data_format=data_format)
 
+        if (custom_reader is not None) and (not callable(custom_reader)):
+            raise ValueError("The custom_reader must be either None or a "
+                             "callable.")
+        self.custom_reader = custom_reader
+
     def _get_image_names(self):
         # TODO: May be slow in case there are many files and many qualifiers
 
         # Get all subdirectories (images)
-        images_ = os.listdir(self.dir_path)
+        images_ = os.listdir(self.dir_path)  # "." not included here
         images = []
+        if ("" in self.image_names):
+            images = [""]
+            self.image_names.remove("")
+        if ("." in self.image_names):
+            if self.exact_image_names:
+                images = [""]
+                self.image_names.remove("")
+            else:
+                # We don't do anything here, because it is the user's regexp
+                pass
+
         for im in images_:
             if self.image_names is None:
                 images.append(im)  # In this case we add all subdirectories
@@ -1649,12 +1689,14 @@ class Dicom3DDataset(DicomDataset):
             for channel in channel_dirs_:  # channel = "CT"
                 channel_dirs.append(channel)  # channel_dirs = ["CT"]
         else:
-            for channel_name in channel_names:  # channel_name = ["CT.*", "[CT].*"]
+            # channel_name = ["CT.*", "[CT].*"]
+            for channel_name in channel_names:
                 found = False
                 for channel_re in channel_name:  # channel_re = "CT.*"
                     for channel in channel_dirs_:  # channel = "CT"
                         if re.match(channel_re, channel):
-                            channel_dirs.append(channel)  # channel_dirs = ["CT"]
+                            # channel_dirs = ["CT"]
+                            channel_dirs.append(channel)
                             found = True
                             break
                     if found:
@@ -1703,6 +1745,10 @@ class Dicom3DDataset(DicomDataset):
         return all_channel_files, all_channel_names
 
     def _read_image(self, files):
+
+        # Use the custom reader, if there is one
+        if self.custom_reader is not None:
+            return self.custom_reader(self, files)
 
         slices = [None] * (len(files) + 1)  # Allocate for zero as well
         found_zero = False
@@ -1769,7 +1815,8 @@ class Dicom3DDataset(DicomDataset):
 
             if self.cache_size is not None:  # Use cache?
                 this_size = utils.sizeof(image)
-                while self._cache_cur_size + this_size > self.cache_size * 2**30:
+                while self._cache_cur_size + this_size \
+                        > self.cache_size * 2**30:
                     index_drop = self._cache_order[0]
                     index_size = self._cache[index_drop][1]
                     del self._cache[index_drop]
@@ -1879,6 +1926,17 @@ class Dicom2DDataset(DicomDataset):
         Custom transform to apply to each 2-dimensional image. Default is
         ``None``, which means to not apply any transform.
 
+    custom_listdir : callable, optional
+        Custom function to list all valid files in a directory. Should take a
+        string representation of a directory as input and return a list of
+        valid filenames in that directory. Default is None, which means to use
+        the built-in method for this (based on pydicom).
+
+    custom_reader : callable, optional
+        A custom image reader. The reader takes a string, with the file name of
+        the slice, and returns a numpy array with the slice. Default is None,
+        which means to use the built-in reader (based on pydicom).
+
     cache_size : float or int, optional
         The cache size in gigabytes (GiB, 2**30 bytes). If a value is
         given, it must correspond to at least one byte (``1 / 2**30``). The
@@ -1904,6 +1962,8 @@ class Dicom2DDataset(DicomDataset):
                  channel_output_names=None,
                  order_slices=True,
                  transform=None,
+                 custom_listdir=None,
+                 custom_reader=None,
                  cache_size=None,
                  data_format=None):
 
@@ -1914,8 +1974,14 @@ class Dicom2DDataset(DicomDataset):
                          channel_output_names=channel_output_names,
                          order_slices=order_slices,
                          transform=transform,
+                         custom_listdir=custom_listdir,
                          cache_size=cache_size,
                          data_format=data_format)
+
+        if (custom_reader is not None) and (not callable(custom_reader)):
+            raise ValueError("The custom_reader must be either None or a "
+                             "callable.")
+        self.custom_reader = custom_reader
 
         self._all_images, self._image_names = self._get_all_images()
         if self.channel_output_names is not None:
@@ -2041,7 +2107,11 @@ class Dicom2DDataset(DicomDataset):
         # Return the pairs of filenames and the name of the resp. modalities
         return all_images, all_channel_names
 
-    def _read_image_slice(self, file):
+    def _read_image(self, file):
+
+        # Use the custom reader, if there is one
+        if self.custom_reader is not None:
+            return self.custom_reader(self, file)
 
         data = pydicom.dcmread(file)
         image = data.pixel_array.astype(float)
@@ -2064,7 +2134,7 @@ class Dicom2DDataset(DicomDataset):
             image = {}
             for channel_i in range(len(self._image_names)):
                 channel = self._image_names[channel_i]
-                channel_image = self._read_image_slice(images[channel_i])
+                channel_image = self._read_image(images[channel_i])
                 if self.data_format == "channels_last":
                     channel_image = channel_image[..., np.newaxis]
                 else:
@@ -2073,7 +2143,8 @@ class Dicom2DDataset(DicomDataset):
 
             if self.cache_size is not None:  # Use cache?
                 this_size = utils.sizeof(image)
-                while self._cache_cur_size + this_size > self.cache_size * 2**30:
+                while self._cache_cur_size + this_size \
+                        > self.cache_size * 2**30:
                     index_drop = self._cache_order[0]
                     index_size = self._cache[index_drop][1]
                     del self._cache[index_drop]
@@ -2931,6 +3002,7 @@ class Dicom3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
+        from keras.backend.common import normalize_data_format
         self.data_format = normalize_data_format(data_format)
 
         if random_state is None:
@@ -3417,6 +3489,7 @@ class DicomGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(self.batch_size, int(random_pool_size))
 
+        from keras.backend.common import normalize_data_format
         self.data_format = normalize_data_format(data_format)
 
         if random_state is None:
@@ -3719,7 +3792,10 @@ class Numpy2DGenerator(BaseGenerator):
         self.restart_generation = bool(restart_generation)
         self.pool_size = max(1, int(pool_size))
         self.randomize_order = bool(randomize_order)
+
+        from keras.backend.common import normalize_data_format
         self.data_format = normalize_data_format(data_format)
+
         self.random_state = utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
 
@@ -3990,7 +4066,9 @@ class Numpy3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
+        from keras.backend.common import normalize_data_format
         self.data_format = normalize_data_format(data_format)
+
         self.random_state = utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
 

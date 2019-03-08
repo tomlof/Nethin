@@ -11,14 +11,18 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 import keras.backend as K
-from keras.engine import InputSpec
-from keras.utils import conv_utils
-from keras.engine.topology import Layer
+# K = utils.LazyImport("keras.backend")  # import keras.backend as K
+import keras.engine as keras_engine
+# keras_engine = utils.LazyImport("keras.engine")  # import keras.engine
+import keras.utils as keras_utils
+# keras_utils = utils.LazyImport("keras.utils")  # import keras.utils
+import keras.engine.topology as keras_engine_topology
+# keras_engine_topology = utils.LazyImport("keras.engine.topology")
 
 __all__ = ["ReflectPadding2D"]
 
 
-class ReflectPadding2D(Layer):
+class ReflectPadding2D(keras_engine_topology.Layer):
     """Reflection-padding layer for 2D input (e.g. picture).
 
     This layer adds rows and columns of reflected versions of the input at the
@@ -53,7 +57,8 @@ class ReflectPadding2D(Layer):
     >>> A = np.arange(12).reshape(3, 4).astype(np.float32)
     >>>
     >>> inputs = Input(shape=(3, 4, 1))
-    >>> x = neural.ReflectPadding2D(padding=2, data_format="channels_last")(inputs)
+    >>> x = neural.ReflectPadding2D(padding=2,
+    ...                             data_format="channels_last")(inputs)
     >>> model = Model(inputs=inputs, outputs=x)
     >>> model.predict(A.reshape(1, 3, 4, 1)).reshape(7, 8)
     array([[ 10.,   9.,   8.,   9.,  10.,  11.,  10.,   9.],
@@ -65,7 +70,8 @@ class ReflectPadding2D(Layer):
            [  2.,   1.,   0.,   1.,   2.,   3.,   2.,   1.]], dtype=float32)
     >>>
     >>> inputs = Input(shape=(1, 3, 4))
-    >>> x = neural.ReflectPadding2D(padding=1, data_format="channels_first")(inputs)
+    >>> x = neural.ReflectPadding2D(padding=1,
+    ...                             data_format="channels_first")(inputs)
     >>> model = Model(inputs=inputs, outputs=x)
     >>> model.predict(A.reshape(1, 1, 3, 4)).reshape(5, 6)
     array([[[[  5.,   4.,   5.,   6.,   7.,   6.],
@@ -84,10 +90,10 @@ class ReflectPadding2D(Layer):
             if len(padding) != 2:
                 raise ValueError('`padding` should have two elements. '
                                  'Found: ' + str(padding))
-            height_padding = conv_utils.normalize_tuple(padding[0], 2,
-                                                        "1st entry of padding")
-            width_padding = conv_utils.normalize_tuple(padding[1], 2,
-                                                       "2nd entry of padding")
+            height_padding = keras_utils.conv_utils.normalize_tuple(
+                    padding[0], 2, "1st entry of padding")
+            width_padding = keras_utils.conv_utils.normalize_tuple(
+                    padding[1], 2, "2nd entry of padding")
             self.padding = (height_padding, width_padding)
         else:
             raise ValueError('`padding` should be either an int, '
@@ -97,9 +103,10 @@ class ReflectPadding2D(Layer):
                              '((top_pad, bottom_pad), (left_pad, right_pad)). '
                              'Found: ' + str(padding))
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        self.data_format = keras_utils.conv_utils.normalize_data_format(
+                data_format)
 
-        self.input_spec = InputSpec(ndim=4)
+        self.input_spec = keras_engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 

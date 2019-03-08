@@ -11,16 +11,20 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 import keras.backend as K
-from keras.engine import InputSpec
-from keras.engine.topology import Layer
+# K = utils.LazyImport("keras.backend")  # import keras.backend as K
+import keras.engine as keras_engine
+# keras_engine = utils.LazyImport("keras.engine")  # import keras.engine
+import keras.engine.topology as keras_engine_topology
+# keras_engine_topology = utils.LazyImport("keras.engine.topology")
 
 __all__ = ["InstanceNormalization2D"]
 
 
-class InstanceNormalization2D(Layer):
+class InstanceNormalization2D(keras_engine_topology.Layer):
     """Instance normalisation layer.
 
-    Adapted from: https://github.com/PiscesDream/CycleGAN-keras/blob/master/CycleGAN/layers/normalization.py
+    Adapted from:
+        https://github.com/PiscesDream/CycleGAN-keras/blob/master/CycleGAN/layers/normalization.py
 
     Parameters
     ----------
@@ -74,7 +78,7 @@ class InstanceNormalization2D(Layer):
         self.center = bool(center)
         self.scale = bool(scale)
 
-        self.input_spec = InputSpec(ndim=4)
+        self.input_spec = keras_engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 
@@ -122,16 +126,24 @@ class InstanceNormalization2D(Layer):
             mu_vec = K.sum(x, axis=[1, 2], keepdims=True) / hw
             sig2 = K.sum(K.square(x - mu_vec), axis=[1, 2], keepdims=True) / hw
 
-            gamma = K.expand_dims(K.expand_dims(K.expand_dims(self.gamma, 0), 0), 0)
-            beta = K.expand_dims(K.expand_dims(K.expand_dims(self.beta, 0), 0), 0)
+            gamma = K.expand_dims(K.expand_dims(K.expand_dims(self.gamma, 0),
+                                                0),
+                                  0)
+            beta = K.expand_dims(K.expand_dims(K.expand_dims(self.beta, 0),
+                                               0),
+                                 0)
 
         else:  # self.axis == 1  # "channels_first"
             hw = K.cast(x.shape[2] * x.shape[3], K.floatx())
             mu_vec = K.sum(x, axis=[2, 3], keepdims=True) / hw
             sig2 = K.sum(K.square(x - mu_vec), axis=[2, 3], keepdims=True) / hw
 
-            gamma = K.expand_dims(K.expand_dims(K.expand_dims(self.gamma, 0), -1), -1)
-            beta = K.expand_dims(K.expand_dims(K.expand_dims(self.beta, 0), -1), -1)
+            gamma = K.expand_dims(K.expand_dims(K.expand_dims(self.gamma, 0),
+                                                -1),
+                                  -1)
+            beta = K.expand_dims(K.expand_dims(K.expand_dims(self.beta, 0),
+                                               -1),
+                                 -1)
 
         y = (x - mu_vec) / (K.sqrt(sig2) + K.epsilon())
 

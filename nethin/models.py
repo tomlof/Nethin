@@ -49,7 +49,7 @@ import keras.initializers
 import keras.regularizers
 import keras.losses
 
-from nethin.utils import get_device_string, with_device, Helper, to_snake_case
+from nethin.utils import get_device_string, with_device, Helper
 import nethin.consts as consts
 import nethin.utils as utils
 import nethin.padding as padding

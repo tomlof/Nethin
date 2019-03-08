@@ -14,11 +14,12 @@ import gc
 import sys
 import six
 import json
+import types
+import queue
 import base64
 import numbers
 import builtins
-from collections.abc import Iterable
-import queue
+import importlib
 
 import numpy as np
 import scipy.interpolate as interpolate
@@ -33,25 +34,87 @@ except (ImportError):
     except (ImportError):
         _HAS_SIZEOF = False
 
-import tensorflow as tf
-import keras.backend as K
-import keras.engine
-try:
-    from keras.engine.topology import _to_snake_case as to_snake_case
-except ImportError:
-    from keras.engine.base_layer import _to_snake_case as to_snake_case
-from keras.utils.generic_utils import serialize_keras_object, \
-                                      deserialize_keras_object, \
-                                      func_dump, \
-                                      func_load
-import keras.activations as keras_activations
-import keras.layers.advanced_activations as keras_advanced_activations
-from keras.layers import Activation
 
-__all__ = ["Helper", "get_device_string", "with_device",
+class LazyImport(types.ModuleType):
+    """Provides lazy import of modules.
+
+    This does not work well with reimports (e.g. in iPython). Put on hold for
+    now.
+    """
+    def __init__(self, name):
+
+        super().__init__(name)
+
+        fullname = str(name)  # "package.foo.bar"
+        super().__setattr__("fullname", fullname)
+        basename = fullname.split(".")[0]  # "package"
+        super().__setattr__("basename", basename)
+
+        # Do a quick test on the base module. We cannot check the full name,
+        # because that would import the base module(s).
+        if importlib.util.find_spec(basename) is None:
+            raise ModuleNotFoundError("No module named '%s'"
+                                      % (fullname,))
+
+        super().__setattr__("module", None)
+
+    def __getattribute__(self, attr):
+
+        module = super().__getattribute__("module")
+
+        if module is None:
+
+            fullname = super().__getattribute__("fullname")
+
+            # This is likely iPython checking out our module:
+            if attr == "__class__":
+                return super().__getattribute__("__class__")
+
+            # print("Loaded: %s" % (attr,))
+            # for line in traceback.format_stack():
+            #     print(line.strip())
+
+            module = __import__(fullname,
+                                fromlist=[],
+                                level=0)  # absolute imports
+            super().__setattr__("module", module)
+        else:
+            return module.__getattribute__(attr)
+
+    def __repr__(self):
+        module = super().__getattribute__("module")
+        fullname = super().__getattribute__("fullname")
+        if module is None:
+            return "<module '%s' will be loaded when used>" % (fullname,)
+        else:
+            return repr(module)
+
+
+import tensorflow as tf
+# tf = LazyImport("tensorflow")  # import tensorflow as tf
+import keras.backend as K
+# K = LazyImport("keras.backend")  # import keras.backend as K
+import keras.engine as keras_engine
+# keras_engine = LazyImport("keras.engine")  # import keras.engine
+
+# try:
+#     from keras.engine.topology import _to_snake_case as to_snake_case
+# except ImportError:
+#     from keras.engine.base_layer import _to_snake_case as to_snake_case
+
+import keras.activations as keras_activations
+# keras_activations = LazyImport("keras.activations")
+import keras.layers.advanced_activations as keras_advanced_activations
+# keras_advanced_activations = LazyImport("keras.layers.advanced_activations")
+import keras.layers as keras_layers
+# keras_layers = LazyImport("keras.layers")
+
+__all__ = [# "LazyImport",
+           "Helper", "get_device_string", "with_device",
            "serialize_activations", "deserialize_activations",
            "serialize_array", "deserialize_array",
-           "to_snake_case", "get_json_type",
+           # "to_snake_case",
+           "get_json_type",
            "normalize_object", "normalize_list", "normalize_str",
            "normalize_random_state", "normalize_callables",
            "apply_callables",
@@ -138,7 +201,8 @@ class TensorflowHelper(object):
             device_type = str(device_type).upper()
 
         try:
-            # Adapted from: https://stackoverflow.com/questions/38559755/how-to-get-current-available-gpus-in-tensorflow
+            # Adapted from:
+            # https://stackoverflow.com/questions/38559755/how-to-get-current-available-gpus-in-tensorflow
             # Note the comment by Yaroslav Bulatov: "PS, if this method ever
             # gets moved/renamed, I would look inside
             # tensorflow/python/platform/test.py:is_gpu_available since that's
@@ -153,8 +217,9 @@ class TensorflowHelper(object):
                         if d.device_type == device_type]
             else:
                 return [d.name for d in local_devices]
-        except:
-            # Adapted from: https://stackoverflow.com/questions/38009682/how-to-tell-if-tensorflow-is-using-gpu-acceleration-from-inside-python-shell
+        except Exception:
+            # Adapted from:
+            # https://stackoverflow.com/questions/38009682/how-to-tell-if-tensorflow-is-using-gpu-acceleration-from-inside-python-shell
 
             local_devices = []
 
@@ -166,11 +231,14 @@ class TensorflowHelper(object):
                     with tf.device(device_name):
                         with tf.name_scope("TensorflowHelper"):
                             a = tf.constant([1, 2], shape=[1, 2],
-                                    name="get_devices.cpu_a%d" % dev_num)
+                                            name="get_devices.cpu_a%d"
+                                                 % dev_num)
                             b = tf.constant([3, 4], shape=[2, 1],
-                                    name="get_devices.cpu_b%d" % dev_num)
+                                            name="get_devices.cpu_b%d"
+                                                 % dev_num)
                             c = tf.matmul(a, b,
-                                    name="get_devices.cpu_b%d" % dev_num)
+                                          name="get_devices.cpu_b%d"
+                                               % dev_num)
                     # # if self._session is None:
                     # with tf.Session() as sess:
                     #     sess.run(c)  # Try to use the device
@@ -183,7 +251,7 @@ class TensorflowHelper(object):
                     local_devices.append(device_name)
                     dev_num += 1
 
-            except:
+            except Exception:
                 pass
 
             # Try to use the gpu(s), and return available devices.
@@ -194,11 +262,14 @@ class TensorflowHelper(object):
                     with tf.device(device_name):
                         with tf.name_scope("TensorflowHelper/"):  # Reuse scope
                             a = tf.constant([1, 2], shape=[1, 2],
-                                    name="get_devices.gpu_a%d" % dev_num)
+                                            name="get_devices.gpu_a%d"
+                                                 % dev_num)
                             b = tf.constant([3, 4], shape=[2, 1],
-                                    name="get_devices.gpu_b%d" % dev_num)
+                                            name="get_devices.gpu_b%d"
+                                                 % dev_num)
                             c = tf.matmul(a, b,
-                                    name="get_devices.gpu_b%d" % dev_num)
+                                          name="get_devices.gpu_b%d"
+                                               % dev_num)
                     # # if self._session is None:
                     # with tf.Session() as sess:
                     #     sess.run(c)  # Try to use the device
@@ -211,7 +282,7 @@ class TensorflowHelper(object):
                     local_devices.append(device_name)
                     dev_num += 1
 
-            except:
+            except Exception:
                 pass
 
             # TODO: Other device types??
@@ -277,11 +348,13 @@ def serialize_activations(activations):
         if isinstance(activation, six.string_types):
             return activation
 
-        if isinstance(activation, keras.engine.Layer):  # Advanced activation
+        if isinstance(activation, keras_engine.Layer):  # Advanced activation
+            from keras.utils.generic_utils import serialize_keras_object
             return serialize_keras_object(activation)
 
         # The order matters here, since Layers are also callable.
         if callable(activation):  # A function
+            from keras.utils.generic_utils import func_dump
             return func_dump(activation)
 
         # Keras serialized config
@@ -295,6 +368,7 @@ def serialize_activations(activations):
                 and len(activation) == 3 \
                 and isinstance(activation[0], six.string_types):
             try:
+                from keras.utils.generic_utils import func_load
                 # TODO: Better way to check if it is a marshalled function!
                 func_load(activation)  # Try to unmarshal it
 
@@ -354,10 +428,10 @@ def deserialize_activations(activations, length=None, device=None):
 
         # Simple activation
         if (activation is None) or isinstance(activation, six.string_types):
-            return with_device(device, Activation, activation)
+            return with_device(device, keras_layers.Activation, activation)
 
         # Advanced activation (it has already been created, nothing we can do)
-        if isinstance(activation, keras.engine.Layer):
+        if isinstance(activation, keras_engine.Layer):
             return activation
 
         # Function (it has already been created, nothing we can do)
@@ -389,6 +463,8 @@ def deserialize_activations(activations, length=None, device=None):
                 and len(activation) == 3 \
                 and isinstance(activation[0], six.string_types):
             try:
+                from keras.utils.generic_utils import func_load
+
                 # TODO: Better way to check if it is a marshalled function!
                 return func_load(activation)  # Try to unmarshal it
 
@@ -711,22 +787,24 @@ def normalize_random_state(random_state=None, rand_functions=[]):
     --------
     >>> import nethin.utils as utils
     >>> import numpy as np
-    >>> utils.normalize_random_state(np.random, rand_functions=["rand"])  # doctest: +ELLIPSIS
+    >>> utils.normalize_random_state(
+    ...         np.random, rand_functions=["rand"])  # doctest: +ELLIPSIS
     <module 'numpy.random' from ...>
-    >>> utils.normalize_random_state(np.random, rand_functions=["foo"])  # doctest: +ELLIPSIS
+    >>> utils.normalize_random_state(
+    ...         np.random, rand_functions=["foo"])  # doctest: +ELLIPSIS
     Traceback (most recent call last):
         ...
-    TypeError: Cannot cast array from dtype('O') to dtype('int64') according to the rule 'safe'
+    TypeError: Cannot cast array from dtype('O') to dtype('int64') ...
     >>> utils.normalize_random_state(42)  # doctest: +ELLIPSIS
     <mtrand.RandomState ...>
     """
-    done = False    
+    done = False
     if random_state is None:
         random_state = np.random.random.__self__  # Numpy built-in
         done = True
 
     else:
-        if isinstance(random_state, (numbers.Number, int, float)):
+        if isinstance(random_state, int):
             random_state = np.random.RandomState(seed=random_state)
             done = True
 
@@ -876,15 +954,15 @@ def simple_bezier(dist,
     def _bezier_func(t, P):
 
         x = P[0][0] * 1.0 * (1.0 - t)**4.0 * t**0.0 \
-          + P[1][0] * 4.0 * (1.0 - t)**3.0 * t**1.0 \
-          + P[2][0] * 6.0 * (1.0 - t)**2.0 * t**2.0 \
-          + P[3][0] * 4.0 * (1.0 - t)**1.0 * t**3.0 \
-          + P[4][0] * 1.0 * (1.0 - t)**0.0 * t**4.0
+            + P[1][0] * 4.0 * (1.0 - t)**3.0 * t**1.0 \
+            + P[2][0] * 6.0 * (1.0 - t)**2.0 * t**2.0 \
+            + P[3][0] * 4.0 * (1.0 - t)**1.0 * t**3.0 \
+            + P[4][0] * 1.0 * (1.0 - t)**0.0 * t**4.0
         y = P[0][1] * 1.0 * (1.0 - t)**4.0 * t**0.0 \
-          + P[1][1] * 4.0 * (1.0 - t)**3.0 * t**1.0 \
-          + P[2][1] * 6.0 * (1.0 - t)**2.0 * t**2.0 \
-          + P[3][1] * 4.0 * (1.0 - t)**1.0 * t**3.0 \
-          + P[4][1] * 1.0 * (1.0 - t)**0.0 * t**4.0
+            + P[1][1] * 4.0 * (1.0 - t)**3.0 * t**1.0 \
+            + P[2][1] * 6.0 * (1.0 - t)**2.0 * t**2.0 \
+            + P[3][1] * 4.0 * (1.0 - t)**1.0 * t**3.0 \
+            + P[4][1] * 1.0 * (1.0 - t)**0.0 * t**4.0
 
         return x, y
 
@@ -986,14 +1064,14 @@ def dynamic_histogram_warping(I1,
                 for k in range(2, M + 1):
                     if m - k < 0:
                         break
-                    case2 = min(case2, D[m - k, n - 1] \
-                            + abs((AC[m] - AC[m - k]) - B[n]))
+                    case2 = min(case2, D[m - k, n - 1]
+                                + abs((AC[m] - AC[m - k]) - B[n]))
                 case3 = np.inf
                 for l in range(2, N + 1):
                     if n - l < 0:
                         break
-                    case3 = min(case3, D[m - 1, n - l] \
-                            + abs(A[m] - (BC[n] - BC[n - l])))
+                    case3 = min(case3, D[m - 1, n - l]
+                                + abs(A[m] - (BC[n] - BC[n - l])))
                 D[m, n] = min(case1, case2, case3)
 
     # Find least-cost path through the cost space
@@ -1005,7 +1083,7 @@ def dynamic_histogram_warping(I1,
     while (m > 0 and n > 0):
         x_A.insert(0, (bins_A[m] + bins_A[m + 1]) / 2.0)
         x_B.insert(0, (bins_B[n] + bins_B[n + 1]) / 2.0)
-    
+
         min_m = m
         min_n = n
         # Select neighbour with lowest cost
@@ -1018,39 +1096,52 @@ def dynamic_histogram_warping(I1,
         elif D[m, n - 1] < D[m - 1, n - 1] and D[m, n - 1] < D[m - 1, n]:
             min_m = m
             min_n = n - 1
-        else:  # At least two costs were equally low: Prefer to be closer to
-               # the diagonal in this case (i.e., choose the one closest to the
-               # diagonal).
+        else:
+            # At least two costs were equally low: Prefer to be closer to
+            # the diagonal in this case (i.e., choose the one closest to the
+            # diagonal).
             if D[m - 1, n - 1] == D[m - 1, n] \
                     and D[m - 1, n - 1] == D[m, n - 1]:  # All equal:
-                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+                if (float(m) / float(num_bins_A)) \
+                        < (float(n) / float(num_bins_B)):
                     min_m = m
                     min_n = n - 1
-                elif (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                elif (float(m) / float(num_bins_A)) \
+                        > (float(n) / float(num_bins_B)):
                     min_m = m - 1
                     min_n = n
                 else:
                     min_m = m - 1
                     min_n = n - 1
-            elif D[m - 1, n - 1] == D[m - 1, n]: # The two above are equal:
-                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+            elif D[m - 1, n - 1] == D[m - 1, n]:  # The two above are equal:
+                if (float(m) / float(num_bins_A)) \
+                        < (float(n) / float(num_bins_B)):
                     min_m = m - 1
                     min_n = n - 1
-                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                else:
+                    # (float(m) / float(num_bins_A)) \
+                    #     > (float(n) / float(num_bins_B)):
                     min_m = m - 1
                     min_n = n
-            elif D[m - 1, n - 1] == D[m, n - 1]: # The two to the left are equal:
-                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+            elif D[m - 1, n - 1] == D[m, n - 1]:  # The two (left) are equal
+                if (float(m) / float(num_bins_A)) \
+                        < (float(n) / float(num_bins_B)):
                     min_m = m
                     min_n = n - 1
-                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                else:
+                    # (float(m) / float(num_bins_A)) \
+                    #     > (float(n) / float(num_bins_B)):
                     min_m = m - 1
                     min_n = n - 1
-            else:  # D[m - 1, n] == D[m, n - 1]: # The one to the left and the one above are equal:
-                if (float(m) / float(num_bins_A)) < (float(n) / float(num_bins_B)):
+            else:  # D[m - 1, n] == D[m, n - 1]:
+                # The one to the left and the one above are equal:
+                if (float(m) / float(num_bins_A)) \
+                        < (float(n) / float(num_bins_B)):
                     min_m = m
                     min_n = n - 1
-                else:  # (float(m) / float(num_bins_A)) > (float(n) / float(num_bins_B)):
+                else:
+                    # (float(m) / float(num_bins_A)) \
+                    #     > (float(n) / float(num_bins_B)):
                     min_m = m - 1
                     min_n = n
         m = min_m
@@ -1089,8 +1180,8 @@ def dynamic_histogram_warping(I1,
         js_between = js[between]
         x_A_js_between_1 = x_A_[js_between - 1]
         VB_[between] = x_A_js_between_1 \
-                         + np.multiply(steps[between],
-                                       x_A_[js_between] - x_A_js_between_1)
+            + np.multiply(steps[between],
+                          x_A_[js_between] - x_A_js_between_1)
 
 #        for i in range(len(VB_)):
 #            value = VB[i]
@@ -1172,9 +1263,13 @@ def histogram_matching(A, B, return_cost=False, num_cost_interp=100):
     ...     ascent = resize(ascent, [512, 512], mode="reflect")
     ... except:
     ...     shape = face.shape
-    ...     idx = np.floor(shape[0] * np.linspace(0.0, 1.0 - np.finfo('float').eps, 512)).astype(np.int32)
+    ...     idx = np.floor(shape[0] * np.linspace(0.0,
+    ...                                           1.0 - np.finfo('float').eps,
+    ...                                           512)).astype(np.int32)
     ...     face = face[idx, :]
-    ...     idx = np.floor(shape[1] * np.linspace(0.0, 1.0 - np.finfo('float').eps, 512)).astype(np.int32)
+    ...     idx = np.floor(shape[1] * np.linspace(0.0,
+    ...                                           1.0 - np.finfo('float').eps,
+    ...                                           512)).astype(np.int32)
     ...     face = face[:, idx]
     >>> import nethin.utils as utils
     >>> A = face.astype(np.float64)
@@ -1217,9 +1312,15 @@ def histogram_matching(A, B, return_cost=False, num_cost_interp=100):
         B_norm = B_values / np.max(B_values)
         A_norm = A_values / np.max(A_values)
 
-        ind_B = np.floor(B_norm.size * np.linspace(0.0, 1.0 - np.finfo(np.float64).eps, num_cost_interp)).astype(np.int32)
+        ind_B = np.floor(
+                B_norm.size * np.linspace(0.0,
+                                          1.0 - np.finfo(np.float64).eps,
+                                          num_cost_interp)).astype(np.int32)
         interp_B = B_norm[ind_B]
-        ind_A = np.floor(A_norm.size * np.linspace(0.0, 1.0 - np.finfo(np.float64).eps, num_cost_interp)).astype(np.int32)
+        ind_A = np.floor(
+                A_norm.size * np.linspace(0.0,
+                                          1.0 - np.finfo(np.float64).eps,
+                                          num_cost_interp)).astype(np.int32)
         interp_A = A_norm[ind_A]
 
         dx = 1.0 / float(num_cost_interp - 1)

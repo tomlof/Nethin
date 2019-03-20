@@ -17,7 +17,9 @@ import json
 import types
 import queue
 import base64
+import string
 import numbers
+import zipfile
 import builtins
 import importlib
 
@@ -119,7 +121,7 @@ __all__ = [# "LazyImport",
            "normalize_random_state", "normalize_callables",
            "apply_callables",
            "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
-           "vector_median", "sizeof",
+           "vector_median", "sizeof", "random_string", "is_npz_file",
            "ExceedingThresholdException"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
@@ -1512,6 +1514,39 @@ def sizeof(o, use_external=True):
                     q.put(o_)
 
     return size
+
+
+def random_string(size,
+                  characters=string.ascii_lowercase
+                  + string.ascii_uppercase + string.digits,
+                  random_state=None):
+
+    random_state = normalize_random_state(random_state,
+                                          rand_functions=["randint"])
+
+    n = len(characters)
+
+    return ''.join(characters[random_state.randint(0, n)] for _ in range(size))
+
+
+def is_npz_file(file):
+    try:
+        with zipfile.ZipFile(file) as archive:
+            for name in archive.namelist():
+                if not name.endswith('.npy'):
+                    continue
+
+                npy = archive.open(name)
+                version = np.lib.format.read_magic(npy)
+                shape, fortran, dtype = np.lib.format._read_array_header(
+                        npy, version)
+
+                # If we got this far, we are likely ok!
+                return True
+
+            return False
+    except Exception:
+        return False
 
 
 class ExceedingThresholdException(Exception):

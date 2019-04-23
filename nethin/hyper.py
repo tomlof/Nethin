@@ -39,7 +39,7 @@ __all__ = ["UniformPrior", "LogUniformPrior",
 class BasePrior(abc.ABC):
 
     @abc.abstractmethod
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
         pass
 
     @abc.abstractmethod
@@ -51,6 +51,54 @@ class BasePrior(abc.ABC):
         pass
 
 
+class DiscretePrior(BasePrior):
+
+    def __init__(self, probabilities):
+        if not isinstance(probabilities, (list, tuple)):
+            raise ValueError("The probabilities should be a list/tuple of "
+                             "positive floats.")
+        probabilities = [max(0.0, float(p)) for p in probabilities]
+        sum_probs = sum(probabilities)
+        self.probabilities = [p / sum_probs for p in probabilities]
+
+        self._rv_discrete = stats.rv_discrete(
+                values=(range(len(self.probabilities)), self.probabilities))
+
+    def rvs(self, size=None, random_state=None):
+
+        if size is None:
+            size = 1
+        elif isinstance(size, (int, float)):
+            size = (max(0, int(size + 0.5)),)
+        elif isinstance(size, (list, tuple)):
+            size = tuple([max(0, int(s + 0.5)) for s in size])
+        else:
+            raise ValueError("Argument 'size' must be an int or a list/tuple "
+                             "of int.")
+
+        random_state = utils.normalize_random_state(random_state)
+
+        samples = self._rv_discrete.rvs(size=size,
+                                        random_state=random_state)
+
+        return samples
+
+    def transform(self, X):
+        """Transform the prior's values to the default range [0, 1].
+        """
+        return np.clip((X / (len(self.probabilities) - 1)).astype(np.float),
+                       0.0,
+                       1.0)
+
+    def inverse_transform(self, Y):
+        """Transform values from [0, 1] back to the prior's range.
+        """
+        # TODO: "Only" works with less than 2**31 categories ...
+        return (np.clip(Y * (len(self.probabilities) - 1),
+                        0,
+                        len(self.probabilities) - 1) + 0.5).astype(np.int)
+
+
 class UniformPrior(BasePrior):
 
     # TODO: Handle closed, open, and half-open intervals.
@@ -59,9 +107,11 @@ class UniformPrior(BasePrior):
         self.low = min(float(low), float(high))
         self.high = max(float(low), float(high))
 
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
 
-        if isinstance(size, (int, float)):
+        if size is None:
+            size = 1
+        elif isinstance(size, (int, float)):
             size = (max(0, int(size + 0.5)),)
         elif isinstance(size, (list, tuple)):
             size = tuple([max(0, int(s + 0.5)) for s in size])
@@ -105,9 +155,11 @@ class LogUniformPrior(BasePrior):
         self._log_low = np.log10(self.low)
         self._log_high = np.log10(self.high)
 
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
 
-        if isinstance(size, (int, float)):
+        if size is None:
+            size = 1
+        elif isinstance(size, (int, float)):
             size = (max(0, int(size + 0.5)),)
         elif isinstance(size, (list, tuple)):
             size = tuple([max(0, int(s + 0.5)) for s in size])
@@ -144,11 +196,22 @@ class LogUniformPrior(BasePrior):
 
 class Dimension(abc.ABC):
     """Base class for hyper-parameters.
+
+    Parameters
+    ----------
+    name : str
+        The name of this dimension.
+
+    prior : BasePrior
+        The prior to use when sampling from this dimension.
+
+    size : int or tuple of int, optional
+        Non-negative integer(s). The shape of the output.
     """
     def __init__(self,
                  name,
                  prior,
-                 size=1):
+                 size=None):
 
         self.name = str(name)
 
@@ -156,15 +219,21 @@ class Dimension(abc.ABC):
             raise ValueError("The 'prior' must be of type 'BasePrior'.")
         self.prior = prior
 
-        if isinstance(size, (int, float)):
-            self.size = (max(0, int(size)),)
+        if size is None:
+            self.size = (1,)
+        elif isinstance(size, (int, float)):
+            self.size = (max(0, int(size + 0.5)),)
         elif isinstance(size, (list, tuple)):
-            self.size = tuple([int(s) for s in size])
+            self.size = tuple([int(s + 0.5) for s in size])
         else:
             raise ValueError("Argument 'size' must be an int or a list/tuple "
                              "of int.")
 
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
+
+        if size is None:
+            size = self.size
+
         return self.prior.rvs(size=size, random_state=random_state)
 
     def transform(self, X):
@@ -182,40 +251,119 @@ class Dimension(abc.ABC):
         pass
 
 
-class Real(Dimension):
-
+class Boolean(Dimension):
+    """Represents a boolean variable.
+    """
     def __init__(self,
                  name,
-                 prior,
-                 size=1):
+                 prior=None,
+                 size=None):
 
-        super(Real, self).__init__(name,
-                                   prior,
-                                   size=size)
+        if prior is None:
+            prior = UniformPrior(0.0, 1.0)
+
+        if isinstance(prior, DiscretePrior) and len(prior.probabilities) != 2:
+            raise ValueError("A DiscretePrior can only have two categories "
+                             "here.")
+
+        super(Boolean, self).__init__(name,
+                                      prior,
+                                      size=size)
+
+    def rvs(self, size=None, random_state=None):
+
+        value = super().rvs(size=size, random_state=random_state)
+
+        if isinstance(self.prior, DiscretePrior):
+            ret = value == 0  # There should only be two categories here!
+        elif isinstance(self.prior, (UniformPrior, LogUniformPrior)):
+            ret = value < ((self.prior.high - self.prior.low) / 2.0)
+        else:
+            raise RuntimeError("Unknown prior distribution.")
+
+        return ret
 
     def _to_skopt(self):
         if not _HAS_SKOPT:
             raise RuntimeError("This operation requires 'scikit-optimize'.")
 
-        if isinstance(self.prior, UniformPrior):
-            low = self.prior.low
-            high = self.prior.high
-            return skopt.space.Real(low,
-                                    high,
-                                    prior="uniform",
-                                    transform="normalize",
-                                    name=self.name)
-        elif isinstance(self.prior, LogUniformPrior):
-            low = self.prior.low
-            high = self.prior.high
-            return skopt.space.Real(low,
-                                    high,
-                                    prior="log-uniform",
-                                    transform="normalize",
-                                    name=self.name)
+        if self.size is not None:
+            size = np.prod(self.size)
         else:
-            raise RuntimeError("This operation uses 'scikit-optimize', and it "
-                               "does not work with the given prior.")
+            size = 1
+
+        dims = []
+        for i in range(size):
+            if isinstance(self.prior, DiscretePrior):
+                dims.append(skopt.space.Categorical(
+                        [False, True],
+                        prior=self.prior.probabilities,
+                        transform="identity",
+                        name=self.name))
+
+            elif isinstance(self.prior, UniformPrior):
+                dims.append(skopt.space.Categorical(
+                        [False, True],
+                        prior=None,  # None == uniform here
+                        transform="identity",
+                        name=self.name))
+            else:
+                raise RuntimeError("This operation uses 'scikit-optimize', "
+                                   "and booleans do not work with the given "
+                                   "prior (%s)." % (str(self.prior),))
+        return dims
+
+
+class Real(Dimension):
+
+    def __init__(self,
+                 name,
+                 prior,
+                 size=None):
+
+        super(Real, self).__init__(name,
+                                   prior,
+                                   size=size)
+
+    def rvs(self, size=None, random_state=None):
+
+        value = super().rvs(size=size, random_state=random_state)
+
+        return value.astype(np.float)
+
+    def _to_skopt(self):
+        if not _HAS_SKOPT:
+            raise RuntimeError("This operation requires 'scikit-optimize'.")
+
+        if self.size is not None:
+            size = np.prod(self.size)
+        else:
+            size = 1
+
+        dims = []
+        for i in range(size):
+            if isinstance(self.prior, UniformPrior):
+                low = self.prior.low
+                high = self.prior.high
+                dims.append(skopt.space.Real(low,
+                                             high,
+                                             prior="uniform",
+                                             transform="normalize",
+                                             name=self.name))
+
+            elif isinstance(self.prior, LogUniformPrior):
+                low = self.prior.low
+                high = self.prior.high
+                dims.append(skopt.space.Real(low,
+                                             high,
+                                             prior="log-uniform",
+                                             transform="normalize",
+                                             name=self.name))
+            else:
+                raise RuntimeError("This operation uses 'scikit-optimize', "
+                                   "and reals do not work with the given "
+                                   "prior (%s)." % (str(self.prior),))
+        return dims
 
 
 class Integer(Dimension):
@@ -223,41 +371,120 @@ class Integer(Dimension):
     def __init__(self,
                  name,
                  prior,
-                 size=1):
+                 size=None):
 
         super(Integer, self).__init__(name,
                                       prior,
                                       size=size)
 
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
+
         value = super().rvs(size=size, random_state=random_state)
-        return int(value + 0.5)
+
+        if isinstance(self.prior, DiscretePrior):
+            return value
+        else:
+            return (value + 0.5).astype(np.int)
 
     def _to_skopt(self):
         if not _HAS_SKOPT:
             raise RuntimeError("This operation requires 'scikit-optimize'.")
 
-        if isinstance(self.prior, UniformPrior):
-            low = self.prior.low
-            high = self.prior.high
-            return skopt.space.Integer(int(low + 0.5),
-                                       int(high + 0.5),
-                                       transform="normalize",
-                                       name=self.name)
-
-        elif isinstance(self.prior, LogUniformPrior):
-            low = self.prior.low
-            high = self.prior.high
-            value = skopt.space.Real(low,
-                                     high,
-                                     prior="log-uniform",
-                                     transform="normalize",
-                                     name=self.name)
-            return int(value + 0.5)
-
+        if self.size is not None:
+            size = np.prod(self.size)
         else:
-            raise RuntimeError("This operation uses 'scikit-optimize', and it "
-                               "does not work with the given prior.")
+            size = 1
+
+        dims = []
+        for i in range(size):
+            if isinstance(self.prior, UniformPrior):
+                low = self.prior.low
+                high = self.prior.high
+                dims.append(skopt.space.Integer(int(low + 0.5),
+                                                int(high + 0.5),
+                                                transform="normalize",
+                                                name=self.name))
+
+            # elif isinstance(self.prior, LogUniformPrior):
+            #     low = self.prior.low
+            #     high = self.prior.high
+            #     dims.append(skopt.space.Real(low,
+            #                                  high,
+            #                                  prior="log-uniform",
+            #                                  transform="normalize",
+            #                                  name=self.name))
+            else:
+                raise RuntimeError("This operation uses 'scikit-optimize', "
+                                   "and integers do not work with the given "
+                                   "prior (%s)." % (str(self.prior),))
+        return dims
+
+
+class Categorical(Dimension):
+    """Represents a categorical variable.
+    """
+    def __init__(self,
+                 name,
+                 categories,
+                 prior=None,
+                 size=None):
+
+        if prior is None:
+            prior = UniformPrior(0.0, 1.0)
+
+        super(Categorical, self).__init__(name,
+                                          prior,
+                                          size=size)
+
+        if not isinstance(categories, (list, tuple)):
+            raise ValueError("The categories should be a list or tuple.")
+        self.categories = categories
+
+    def rvs(self, size=None, random_state=None):
+
+        value = super().rvs(size=size, random_state=random_state)
+        shape = value.shape
+        ret = [None] * value.size
+
+        value = value.reshape(-1)
+        num_categories = len(self.categories)
+        for i in range(value.size):
+            index = int(value[i] * num_categories)
+            val = self.categories[index]
+            ret[i] = val
+        ret = np.reshape(ret, shape)
+
+        return ret
+
+    def _to_skopt(self):
+        if not _HAS_SKOPT:
+            raise RuntimeError("This operation requires 'scikit-optimize'.")
+
+        if self.size is not None:
+            size = np.prod(self.size)
+        else:
+            size = 1
+
+        dims = []
+        for i in range(size):
+            if isinstance(self.prior, DiscretePrior):
+                dims.append(skopt.space.Categorical(
+                        self.categories,
+                        prior=self.prior.probabilities,
+                        transform="identity",
+                        name=self.name))
+
+            elif isinstance(self.prior, UniformPrior):
+                dims.append(skopt.space.Categorical(
+                        self.categories,
+                        prior=None,  # None == uniform here
+                        transform="identity",
+                        name=self.name))
+            else:
+                raise RuntimeError("This operation uses 'scikit-optimize', "
+                                   "and categorials do not work with the "
+                                   "given prior (%s)." % (str(self.prior),))
+        return dims
 
 
 class Space(object):
@@ -284,15 +511,24 @@ class Space(object):
         if len(names) != len(self.dimensions):
             raise ValueError()
 
-    def rvs(self, size=1, random_state=None):
+    def rvs(self, size=None, random_state=None):
 
         random_state = utils.normalize_random_state(random_state)
 
-        dims = []
+        dims = {}
         for dim in self.dimensions:
-            dims.append(dim.rvs(size=size, random_state=random_state))
+            dims[dim.name] = dim.rvs(size=size, random_state=random_state)
 
         return dims
+
+    def is_categorical(self):
+
+        return all([isinstance(dim, Categorical) for dim in self.dimensions])
+
+    def num_dim_normalized(self):
+
+        return sum([1 if dim.size is None else np.prod(dim.size)
+                    for dim in self.dimensions])
 
     def _to_skopt(self):
 
@@ -301,9 +537,71 @@ class Space(object):
 
         dims = []
         for dim in self.dimensions:
-            dims.append(dim._to_skopt())
+            dim_ = dim._to_skopt()
+            if isinstance(dim_, list):
+                dims.extend(dim_)
+            else:
+                dims.append(dim_)
 
         return dims
+
+    def unflatten(self, dims):
+        """
+        Examples
+        --------
+        >>> import nethin.hyper as hyper
+        >>> import numpy as np
+        >>> np.random.seed(42)
+        >>> #
+        >>> a = hyper.Real("a", hyper.UniformPrior(-2, 2), size=(3, 2))
+        >>> b = hyper.Integer("b", hyper.UniformPrior(-2, 2))
+        >>> c = hyper.Boolean("c", hyper.UniformPrior(-2, 2), size=2)
+        >>> space = hyper.Space([a, b, c])
+        >>> #
+        >>> minimizer = hyper.GaussianProcessRegression(
+        ...     space,
+        ...     acquisition_function=hyper.ExpectedImprovement(hyper.LBFGS()),
+        ...     result=None,  # Previous results
+        ...     random_state=np.random.randint(2**31))
+        >>> hyperopt = hyper.HyperParameterOptimization(minimizer)
+        >>> #
+        >>> result = hyperopt.step(lambda x: 0.0)
+        >>> vals = np.round(result["x"], 5)  # doctest: +NORMALIZE_WHITESPACE
+        array([-1.40655,  0.54935, -1.65037, -0.99839,  0.78373,  0.04561,
+                2.     ,  1.     ,  0.     ])
+        >>> unflattened = space.unflatten(vals)
+        >>> unflattened  # doctest: +NORMALIZE_WHITESPACE
+        [array([[-1.40655,  0.54935],
+                [-1.65037, -0.99839],
+                [ 0.78373,  0.04561]]), array([2.]), array([1., 0.])]
+        >>> unflattened[0].shape
+        (3, 2)
+        >>> unflattened[1].shape
+        (1,)
+        >>> unflattened[2].shape
+        (2,)
+        """
+        unflat_dims = []
+        i = 0
+        for dim in self.dimensions:
+            if dim.size is None:
+                numel = 1
+                shape = (1,)
+            else:
+                numel = int(np.prod(dim.size) + 0.5)
+                if isinstance(dim.size, int):
+                    shape = (dim.size,)
+                else:
+                    shape = tuple(dim.size)
+
+            vals = dims[i:i + numel]
+            i += numel
+            vals = np.asarray(vals)
+            vals = vals.reshape(*shape)
+
+            unflat_dims.append(vals)
+
+        return unflat_dims
 
 
 class BaseAcquisitionFunction(abc.ABC):
@@ -414,6 +712,53 @@ class GaussianProcessRegression(BaseMinimizer):
         self.acq_func_kwargs_ = {"xi": xi,
                                  "kappa": kappa}
 
+    def _cook_estimator(self, space, **kwargs):
+        """
+        Cook a default estimator.
+
+        For the special base_estimator called "DUMMY" the return value is None.
+        This corresponds to sampling points at random, hence there is no need
+        for an estimator.
+
+        Parameters
+        ----------
+        space : Space
+            The space to sample over.
+
+        kwargs : dict, optional
+            Extra parameters provided to the base estimator at init time.
+        """
+        from skopt.learning import GaussianProcessRegressor
+
+        from skopt.learning.gaussian_process.kernels import ConstantKernel
+        from skopt.learning.gaussian_process.kernels import HammingKernel
+        from skopt.learning.gaussian_process.kernels import Matern
+
+        if isinstance(space, Space):
+            n_dims = space.num_dim_normalized()
+            is_cat = space.is_categorical()
+        else:
+            n_dims = space.transformed_n_dims
+            is_cat = space.is_categorical
+
+        cov_amplitude = ConstantKernel(1.0, (0.01, 1000.0))
+        # Only use a special kernel if all dimensions are categorical
+        if is_cat:
+            other_kernel = HammingKernel(length_scale=np.ones(n_dims))
+        else:
+            other_kernel = Matern(
+                length_scale=np.ones(n_dims),
+                length_scale_bounds=[(0.01, 100)] * n_dims, nu=2.5)
+
+        base_estimator = GaussianProcessRegressor(
+            kernel=cov_amplitude * other_kernel,
+            normalize_y=True, noise="gaussian",
+            n_restarts_optimizer=2)
+
+        base_estimator.set_params(**kwargs)
+
+        return base_estimator
+
     def step(self, f):
 
         specs = {"args": copy.copy(inspect.currentframe().f_locals),
@@ -422,9 +767,8 @@ class GaussianProcessRegression(BaseMinimizer):
         import skopt.utils
 
         if self.base_estimator_ is None:
-            self.base_estimator_ = skopt.utils.cook_estimator(
-                "GP",
-                space=self.dimensions,
+            self.base_estimator_ = self._cook_estimator(
+                self.dimensions,
                 random_state=self.random_state.randint(0,
                                                        np.iinfo(np.int32).max),
                 noise=self.noise)
@@ -465,12 +809,12 @@ class HyperParameterOptimization(object):
     >>> import nethin.hyper as hyper
     >>> import numpy as np
     >>> np.random.seed(42)
-    >>>
+    >>> #
     >>> noise_level = 0.1
     >>> def f(x, noise_level=noise_level):
     ...     return np.sin(5 * x[0]) * (1 - np.tanh(x[0] ** 2)) \
     ...                   + np.random.randn() * noise_level
-    >>> x = hyper.Real("x", hyper.UniformPrior(-2, 2))
+    >>> x = hyper.Real("x", hyper.UniformPrior(-2, 2), size=2)
     >>> space = hyper.Space([x])
     >>> af_minimizer = hyper.LBFGS()
     >>> acquisition_function = hyper.ExpectedImprovement(af_minimizer)
@@ -480,17 +824,17 @@ class HyperParameterOptimization(object):
     ...         result=None,  # Previous results
     ...         random_state=np.random.randint(2**31))
     >>> hyperopt = hyper.HyperParameterOptimization(minimizer)
-    >>>
+    >>> #
     >>> result = hyperopt.step(f)
     >>> np.round(result["x_iters"], 5)  # doctest: +NORMALIZE_WHITESPACE
-    array([[-1.40655]])
+    array([[-1.40655,  0.54935]])
     >>> np.round(result["func_vals"], 5)  # doctest: +NORMALIZE_WHITESPACE
     array([-0.08059])
     >>>
     >>> result = hyperopt.step(f)
     >>> np.round(result["x_iters"], 5)  # doctest: +NORMALIZE_WHITESPACE
-    array([[-1.40655],
-           [ 2.     ]])
+    array([[-1.40655,  0.54935],
+           [ 2.     , -2.     ]])
     >>> np.round(result["func_vals"], 5)  # doctest: +NORMALIZE_WHITESPACE
     array([-0.08059,  0.05118])
     """

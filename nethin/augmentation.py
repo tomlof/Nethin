@@ -1035,15 +1035,16 @@ class Rotate(BaseAugmentation):
         else:  # data_format == "channels_first":
             num_channels = inputs.shape[0]
 
-        # c = 0
-        for c in range(num_channels):
-            plane_i = 0
-            # i = 0
-            for i in range(n - 1):
-                # j = 1
-                for j in range(i + 1, n):
-                    if plane_i < len(angles):  # Only rotate if specified
-                        outputs = None
+        plane_i = 0
+        # i = 0
+        for i in range(n - 1):
+            # j = 1
+            for j in range(i + 1, n):
+
+                if plane_i < len(angles):  # Only rotate if specified
+                    outputs = None
+                    # c = 0
+                    for c in range(num_channels):
 
                         if self.data_format == "channels_last":
                             inputs_ = inputs[..., c]
@@ -1059,7 +1060,6 @@ class Rotate(BaseAugmentation):
                                                   mode=self.mode,
                                                   cval=self.cval,
                                                   prefilter=self.prefilter)
-                        plane_i += 1
 
                         if self.data_format == "channels_last":
                             if outputs is None:
@@ -1072,7 +1072,9 @@ class Rotate(BaseAugmentation):
                                         [num_channels] + list(im.shape))
                             outputs[c, ...] = im
 
-                        inputs = outputs  # Next pair of axes will use output
+                    inputs = outputs  # Next pair of axes will use output
+
+                    plane_i += 1
 
         return outputs
 

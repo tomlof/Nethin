@@ -14,6 +14,7 @@ import os
 import re
 import abc
 import six
+import time
 import datetime
 import bisect
 import warnings
@@ -26,6 +27,7 @@ import collections
 import numpy as np
 from six import with_metaclass
 from scipy.misc import imread, imresize
+import imageio
 
 import nethin
 import nethin.utils as utils
@@ -57,9 +59,11 @@ __all__ = ["DataLoader",
 
            "BaseDataset",
            "SQLiteDataset",
-           "DicomDataset", "Dicom3DDataset", "Dicom2DDataset",
-           "Numpy3DDataset",
+           "DicomDataset", "Dicom2DDataset", "Dicom3DDataset",
+           "NumpyDataset", "Numpy3DDataset",
+           "ImageDataset",
            "ArrayDataset",
+
            "Dicom3DSaver",
 
            "BaseGenerator",
@@ -69,6 +73,8 @@ __all__ = ["DataLoader",
 
 
 try:
+    # raise ImportError()
+
     from torch.utils.data import Dataset
     from torch.utils.data import ConcatDataset
     from torch.utils.data import DataLoader
@@ -1248,93 +1254,106 @@ class SQLiteDataset(BaseDataset):
 
 class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
     r"""Base class for Dicom datasets.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the images. The subdirectories of
+        this directory represents (and contains) the 3-dimensional images.
+
+    image_names : list of str, optional
+        The subdirectories to extract files from below the ``dir_path``
+        directory. Every element of this list corresponds to an image that
+        will be read. If a subdirectory is not in this list, it will not
+        be read. If ``exact_image_name`` is ``True``, the elements may be
+        regular expressions. Default is ``None``, which means to read all
+        subdirectories.
+
+    exact_image_names : bool, optional
+        Whether or not to interpret the elements of ``image_names`` as
+        regular expressions or not. If ``True``, the names will not be
+        interpreted as regular expressions, but will be interpreted as
+        constant exact strings; and if ``False``, the names will be
+        interpreted as regular expressions. Default is ``True``, do not
+        interpret as regular expressions.
+
+    channel_names : list of str or list of str, optional
+        The inner strings or lists corresponds to directory names or
+        regular expressions defining the names of the subdirectories under
+        ``image_names`` that corresponds to channels of this image. Every
+        outer element of this list corresponds to a channel of the images
+        defined by ``image_names``. The elements of the inner lists are
+        alternative names for the subdirectories. If more than one
+        subdirectory name matches, only the first one found will be used.
+        Default is ``None``, which means to read all channels (note that
+        this may mean that the images have different channels, if their
+        subdirectories mismatch.)
+
+    file_names : list of str, optional
+        The names of the files to read in the inner-most directory. Can
+        also be a regular expression if ``exact_image_names=True``. Default
+        is None, which means to read all files.
+
+    exact_file_names : bool, optional
+        Whether or not to treat the file_names as regular expressions or
+        exact strings. If ``exact_file_names=False``, the names will be
+        treated as regular expressions. Default is ``True``.
+
+    channel_output_names : list of str, optional
+        Custom names for the output images. The output is a ``dict``, and
+        the keys will be the elements of ``channel_output_names``. If
+        ``None``, the names will instead be the corresponding channel names
+        found using ``channel_names``. If ``channel_names`` is also None,
+        then a ``ValueError`` exception is raised.
+
+    order_slices : bool, optional
+        Whether or not the read slices should be put in order. Not putting
+        them in order is faster than putting them in order, and the
+        difference may be noticable when many files are processed. Default
+        is ``True``, read the files in order.
+
+    transform : callable, optional
+        Custom transform to apply to each volume. Default is ``None``,
+        which means to not apply any transform.
+
+    custom_listdir : callable, optional
+        Custom function to list all valid files in a directory. Should take
+        a string representation of a directory as input and return a list
+        of valid filenames in that directory. Default is None, which means
+        to use the build-in method for this (built on pydicom).
+
+    cache_size : float or int, optional
+        The cache size in gigabytes (GiB, 2**30 bytes). If a value is
+        given, it must correspond to at least one byte (``1 / 2**30``). The
+        default value is ``None``, which means to not use a cache (nothing
+        is stored). Elements are dropped from the cache whenever the stored
+        data reaches ``cache_size``, the policy is first in first out (old
+        elements are dropped first).
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering
+        of the dimensions in the inputs. `channels_last` corresponds to
+        inputs with shape `(batch, height, width, channels)` while
+        `channels_first` corresponds to inputs with shape `(batch,
+        channels, height, width)`. It defaults to the `image_data_format`
+        value found in your Keras config file at `~/.keras/keras.json`. If
+        you never set it, then it will be "channels_last".
     """
     def __init__(self,
                  dir_path,
                  image_names=None,
                  exact_image_names=True,
                  channel_names=None,
+                 exact_channel_names=True,
+                 file_names=None,
+                 exact_file_names=True,
                  channel_output_names=None,
                  order_slices=True,
                  transform=None,
                  custom_listdir=None,
                  cache_size=None,
                  data_format=None):
-        r"""
-        Parameters
-        ----------
-        dir_path : str
-            Path to the directory containing the images. The subdirectories of
-            this directory represents (and contains) the 3-dimensional images.
 
-        image_names : list of str, optional
-            The subdirectories to extract files from below the ``dir_path``
-            directory. Every element of this list corresponds to an image that
-            will be read. If a subdirectory is not in this list, it will not
-            be read. If ``exact_image_name`` is ``True``, the elements may be
-            regular expressions. Default is ``None``, which means to read all
-            subdirectories.
-
-        exact_image_names : bool, optional
-            Whether or not to interpret the elements of ``image_names`` as
-            regular expressions or not. If ``True``, the names will not be
-            interpreted as regular expressions, but will be interpreted as
-            constant exact strings; and if ``False``, the names will be
-            interpreted as regular expressions. Default is ``True``, do not
-            interpret as regular expressions.
-
-        channel_names : list of str or list of str, optional
-            The inner strings or lists corresponds to directory names or
-            regular expressions defining the names of the subdirectories under
-            ``image_names`` that corresponds to channels of this image. Every
-            outer element of this list corresponds to a channel of the images
-            defined by ``image_names``. The elements of the inner lists are
-            alternative names for the subdirectories. If more than one
-            subdirectory name matches, only the first one found will be used.
-            Default is ``None``, which means to read all channels (note that
-            this may mean that the images have different channels, if their
-            subdirectories mismatch.)
-
-        channel_output_names : list of str, optional
-            Custom names for the output images. The output is a ``dict``, and
-            the keys will be the elements of ``channel_output_names``. If
-            ``None``, the names will instead be the corresponding channel names
-            found using ``channel_names``. If ``channel_names`` is also None,
-            then a ``ValueError`` exception is raised.
-
-        order_slices : bool, optional
-            Whether or not the read slices should be put in order. Not putting
-            them in order is faster than putting them in order, and the
-            difference may be noticable when many files are processed. Default
-            is ``True``, read the files in order.
-
-        transform : callable, optional
-            Custom transform to apply to each volume. Default is ``None``,
-            which means to not apply any transform.
-
-        custom_listdir : callable, optional
-            Custom function to list all valid files in a directory. Should take
-            a string representation of a directory as input and return a list
-            of valid filenames in that directory. Default is None, which means
-            to use the build-in method for this (built on pydicom).
-
-        cache_size : float or int, optional
-            The cache size in gigabytes (GiB, 2**30 bytes). If a value is
-            given, it must correspond to at least one byte (``1 / 2**30``). The
-            default value is ``None``, which means to not use a cache (nothing
-            is stored). Elements are dropped from the cache whenever the stored
-            data reaches ``cache_size``, the policy is first in first out (old
-            elements are dropped first).
-
-        data_format : str, optional
-            One of `channels_last` (default) or `channels_first`. The ordering
-            of the dimensions in the inputs. `channels_last` corresponds to
-            inputs with shape `(batch, height, width, channels)` while
-            `channels_first` corresponds to inputs with shape `(batch,
-            channels, height, width)`. It defaults to the `image_data_format`
-            value found in your Keras config file at `~/.keras/keras.json`. If
-            you never set it, then it will be "channels_last".
-        """
         super().__init__(transform=transform)
 
         if not _HAS_PYDICOM:
@@ -1374,6 +1393,23 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
         else:
             raise ValueError('``channel_names`` must be a list of either '
                              'strings or lists of strings.')
+
+        self.exact_channel_names = bool(exact_channel_names)
+
+        if file_names is None:
+            self.file_names = None
+        elif isinstance(file_names, (list, tuple)):
+            self.file_names = []
+            for file in file_names:
+                if isinstance(file, str):
+                    self.file_names.append(file)
+                else:
+                    raise ValueError("``file_names`` must be a list of "
+                                     "strings.")
+        else:
+            raise ValueError("``file_names`` must be a list of strings.")
+
+        self.exact_file_names = bool(exact_file_names)
 
         if channel_output_names is None:
             if channel_names is None:
@@ -1571,6 +1607,9 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
                             images.append(im)
 
         return images
+
+    def __len__(self):
+        return len(self._filtered_image_names)
 
 
 class Dicom3DDataset(DicomDataset):
@@ -2664,7 +2703,416 @@ class Numpy3DDataset(NumpyDataset):
                 image[channel_names[channel_i]] = channel_image
 
             if self._use_cache():
-                self._put_cache(image)
+                self._put_cache(index, image)
+
+        # Perform transform last, then augmentation will work as well
+        if self.transform is not None:
+            image = self.transform(image)
+
+        return image
+
+
+class ImageDataset(with_metaclass(abc.ABCMeta, DicomDataset)):
+    r"""Base class for datasets of image files.
+
+    This class behaves just like the DicomDataset classes, except that it is
+    working on image files (such as png or jpeg images) instead of Dicom files.
+
+    Parameters
+    ----------
+    dir_path : str
+        Path to the directory containing the images. The subdirectories of
+        this directory represents (and contains) the image files.
+
+    image_names : list of str, optional
+        The subdirectories to extract files from below the ``dir_path``
+        directory. Every element of this list corresponds to an image that
+        will be read. If a subdirectory is not in this list, it will not
+        be read. If ``exact_image_name`` is ``False``, the elements may be
+        regular expressions. Default is ``None``, which means to read all
+        subdirectories.
+
+    exact_image_names : bool, optional
+        Whether or not to interpret the elements of ``image_names`` as
+        regular expressions or not. If ``True``, the names will not be
+        interpreted as regular expressions, but will be interpreted as
+        constant exact strings; and if ``False``, the names will be
+        interpreted as regular expressions. Default is ``True``, do not
+        interpret as regular expressions.
+
+    channel_names : list of str or list of str, optional
+        The inner strings or lists corresponds to directory names or
+        regular expressions defining the names of the subdirectories under
+        ``image_names`` that corresponds to channels of this image. Every
+        outer element of this list corresponds to a channel of the images
+        defined by ``image_names``. The elements of the inner lists are
+        alternative names for the subdirectories. If more than one
+        subdirectory name matches, only the first one found will be used.
+        Default is ``None``, which means to read all channels (note that
+        this may mean that the images have different channels, if their
+        subdirectories mismatch.)
+
+    file_names : list of str, optional
+        The names of the files to read in the inner-most directory. Can
+        also be a regular expression if ``exact_image_names=True``. Default
+        is None, which means to read all files.
+
+    exact_file_names : bool, optional
+        Whether or not to treat the file_names as regular expressions or
+        exact strings. If ``exact_file_names=False``, the names will be
+        treated as regular expressions. Default is ``True``.
+
+    channel_output_names : list of str, optional
+        Custom names for the output images. The output is a ``dict``, and
+        the keys will be the elements of ``channel_output_names``. If
+        ``None``, the names will instead be the corresponding channel names
+        found using ``channel_names``. If ``channel_names`` is also None,
+        then a ``ValueError`` exception is raised.
+
+    order_slices : bool, optional
+        Whether or not the read images should be put in order
+        (lexicographically by file names). Not putting them in order is
+        faster than putting them in order, and the difference may be
+        noticable when many files are processed. Default is ``True``, read
+        the files in order.
+
+    transform : callable, optional
+        Custom transform to apply to each image. Default is ``None``,
+        which means to not apply a transform.
+
+    cache_size : float or int, optional
+        The cache size in gigabytes (GiB, 2**30 bytes). If a value is
+        given, it must correspond to at least one byte (``1 / 2**30``). The
+        default value is ``None``, which means to not use a cache (nothing
+        is stored). Elements are dropped from the cache whenever the stored
+        data reaches ``cache_size``, the policy is first in first out (old
+        elements are dropped first).
+
+    data_format : str, optional
+        One of `channels_last` (default) or `channels_first`. The ordering
+        of the dimensions in the inputs. `channels_last` corresponds to
+        inputs with shape `(batch, height, width, channels)` while
+        `channels_first` corresponds to inputs with shape `(batch,
+        channels, height, width)`. It defaults to the `image_data_format`
+        value found in your Keras config file at `~/.keras/keras.json`. If
+        you never set it, then it will be "channels_last".
+    """
+    def __init__(self,
+                 dir_path,
+                 image_names=None,
+                 exact_image_names=True,
+                 channel_names=None,
+                 exact_channel_names=True,
+                 file_names=None,
+                 exact_file_names=True,
+                 channel_output_names=None,
+                 order_slices=True,
+                 transform=None,
+                 cache_size=None,
+                 data_format=None):
+
+        super().__init__(dir_path,
+                         image_names=image_names,
+                         exact_image_names=exact_image_names,
+                         channel_names=channel_names,
+                         exact_channel_names=exact_channel_names,
+                         file_names=file_names,
+                         exact_file_names=exact_file_names,
+                         channel_output_names=channel_output_names,
+                         order_slices=order_slices,
+                         transform=transform,
+                         cache_size=cache_size,
+                         data_format=data_format)
+
+        self._all_images, self._image_names = self._get_all_images()
+        if self.channel_output_names is not None:
+            self._image_names = self.channel_output_names
+
+    def _get_all_images(self):
+        """Returns a list of all the files included in this dataset in order.
+
+        TODO: With many files, this function may be overly slow. There is no
+        need to list all files immediately, we could do this in a lazy fashion.
+        """
+        dir_path = self.dir_path  # "~/data"
+        image_names = self._filtered_image_names  # ["Patient 1", "Patient 2"]
+        channel_names = self.channel_names  # [["CT.*", "[CT].*"], ["MR.*"]]
+
+        channel_dirs = {}
+        all_channel_names = None
+        for image_name in image_names:  # "Patient 1"
+            channel_dirs[image_name] = []
+            # "~/data/Patient 1"
+            image_path = os.path.join(dir_path, image_name)
+            channel_dirs_ = os.listdir(image_path)  # ["CT", "MR"]
+
+            if isinstance(channel_names, list):
+                # channel_name = ["CT.*", "[CT].*"]
+                channel_names_ = channel_names[:]
+                for channel_name_i in range(len(channel_names)):
+                    channel_name = channel_names[channel_name_i]
+                    if "" in channel_name:
+                        channel_dirs[image_name].append("")
+                        del channel_names_[channel_name_i]
+
+                    elif "." in channel_name:
+                        if self.exact_channel_names:
+                            channel_dirs[image_name].append("")
+                            del channel_names_[channel_name_i]
+                        else:
+                            # We don't do anything here, because it is the
+                            # user's regexp
+                            pass
+                channel_names = channel_names_
+
+            if channel_names is None:
+                for channel in channel_dirs_:  # channel = "CT"
+                    # channel_dirs = ["CT"]
+                    channel_dirs[image_name].append(channel)
+            else:
+                # channel_name = ["CT.*", "[CT].*"]
+                for channel_name in channel_names:
+                    found = False
+                    for channel_re in channel_name:  # channel_re = "CT.*"
+                        for channel in channel_dirs_:  # channel = "CT"
+                            if re.match(channel_re, channel):
+                                # channel_dirs = ["CT"]
+                                channel_dirs[image_name].append(channel)
+                                found = True
+                                break
+                        if found:
+                            break
+                    else:
+                        raise RuntimeError("Channel %s was not found for "
+                                           "image %s"
+                                           % (channel_re, image_name))
+                if all_channel_names is None:
+                    all_channel_names = channel_dirs[image_name]
+                elif all_channel_names != channel_dirs[image_name]:
+                    raise RuntimeError("The channels are inconsistent between "
+                                       "images.")
+
+        # channel_dirs = {"Patient 1": ["CT", "MR"], ...}
+
+        all_images = list()
+        channel_length = None
+        for image_name in image_names:  # "Patient 1"
+            all_channel_files = dict()
+            channel_length = None
+            for channel_dir_i in range(len(channel_dirs[image_name])):  # 0
+                # channel_dir = "CT"
+                channel_dir = channel_dirs[image_name][channel_dir_i]
+                # "~/data/Patient 1/CT"
+                channel_path = os.path.join(image_path, channel_dir)
+                # ["im1.dcm", "im2.dcm"]
+                dicom_files = self._listdir(channel_path)
+
+                # Check that channels have the same length
+                if channel_length is None:
+                    channel_length = len(dicom_files)
+                else:
+                    if channel_length != len(dicom_files):
+                        raise RuntimeError("The numbers of slices for channel "
+                                           "%s and channel %s do not agree."
+                                           % (channel_dir, channel_dirs[0]))
+
+                # TODO: Also check image sizes within a channel.
+
+                # Create full relative or absolute path for all slices
+                full_file_names = []
+                for file in dicom_files:
+                    dicom_file = os.path.join(channel_path,
+                                              file)  # "~/data/.../CT/im1.dcm"
+
+                    # ["~/data/.../im1.dcm"]
+                    full_file_names.append(dicom_file)
+
+                # {"CT": ["~/data/Patient 1/CT/im1.dcm"]}
+                all_channel_files[channel_dir] = full_file_names
+
+            # Make a list of (CT, MR) tuples (file names)
+            all_channel_names_ = []
+            for channel_name in all_channel_names:
+                all_channel_names_.append(all_channel_files[channel_name])
+            all_channel_names_ = list(zip(*all_channel_names_))
+
+            all_images.extend(all_channel_names_)
+
+        # Return the pairs of filenames and the name of the resp. modalities
+        return all_images, all_channel_names
+
+    def _listdir(self, path):
+        """Lists all image files in a given folder.
+        """
+        all_files = os.listdir(path)
+
+        files = [None] * len(all_files)
+        num_files = len(files)
+        num_found = 0
+
+        if self.order_slices:
+            all_files = list(sorted(all_files))
+
+        # file_i = 0
+        for file_i in range(len(all_files)):
+            file = all_files[file_i]
+            file_path = os.path.join(path, file)
+
+            # Skip this one if it is not a regular file
+            if not os.path.isfile(file_path):
+                continue
+
+            if self.file_names is not None:
+                # Here we only add them if they match the given file names
+                if self.exact_file_names:  # Exact match
+                    if file not in self.file_names:
+                        continue
+                else:  # Regular expression match
+                    match = False
+                    for name in self.file_names:
+                        if re.match(name, file):
+                            match = True
+                            break
+                    if not match:
+                        continue
+
+            # TODO: Make certain an option?
+            if nethin.utils.is_image_file(file_path, certain=True):
+                slice_index = num_found
+                files[slice_index] = file
+                num_found += 1
+
+        # Remove any extra (non image) files
+        for i in range(num_files - 1, num_found - 1, -1):
+            del files[i]  # Remove unused spots
+
+        # Check that all slices were found
+        for file in files:
+            if file is None:
+                raise RuntimeError("All slices could not be found among the "
+                                   "files in the directory.")
+
+        return files
+
+    def _read_image(self, file):  # files
+
+        image = np.asarray(imageio.imread(file))
+
+        if image.ndim == 2:
+            image = image[..., np.newaxis]
+        else:
+            print("Image shape: " + str(image.shape))
+
+        return image
+
+#    def _get_channel_dirs(self, index):
+#
+#        dir_path = self.dir_path  # "~/data"
+#        image_names = self._filtered_image_names  # ["Patient 1", "Patient 2"]
+#        channel_names = self.channel_names  # [["CT.*", "[CT].*"], ["MR.*"]]
+#
+#        image_name = image_names[index]  # "Patient 1"
+#        image_path = os.path.join(dir_path, image_name)  # "~/data/Patient 1"
+#        channel_dirs_ = os.listdir(image_path)  # ["CT", "MR"]
+#        channel_dirs = []
+#
+#        if isinstance(channel_names, list):
+#            # channel_name = ["CT.*", "[CT].*"]
+#            channel_names_ = channel_names[:]
+#            for channel_name_i in range(len(channel_names)):
+#                channel_name = channel_names[channel_name_i]
+#                if "" in channel_name:
+#                    channel_dirs.append("")
+#                    del channel_names_[channel_name_i]
+#
+#                elif "." in channel_name:
+#                    if self.exact_channel_names:
+#                        channel_dirs.append("")
+#                        del channel_names_[channel_name_i]
+#                    else:
+#                        # We don't do anything here, because it is the user's
+#                        # regexp
+#                        pass
+#            channel_names = channel_names_
+#
+#        if channel_names is None:
+#            for channel in channel_dirs_:  # channel = "CT"
+#                channel_dirs.append(channel)  # channel_dirs = ["CT"]
+#        else:
+#            # channel_name = ["CT.*", "[CT].*"]
+#            for channel_name in channel_names:
+#                found = False
+#                for channel_re in channel_name:  # channel_re = "CT.*"
+#                    for channel in channel_dirs_:  # channel = "CT"
+#                        if re.match(channel_re, channel):
+#                            # channel_dirs = ["CT"]
+#                            channel_dirs.append(channel)
+#                            found = True
+#                            break
+#                    if found:
+#                        break
+#                else:
+#                    raise RuntimeError("Channel %s was not found for image %s"
+#                                       % (channel_re, image_name))
+#        # channel_dirs = ["CT", "MR"]
+#        # return channel_dirs
+#
+#        all_channel_files = list()
+#        all_channel_names = list()
+#        channel_length = None
+#        # channel_dir_i = 0
+#        for channel_dir_i in range(len(channel_dirs)):  # 0
+#            channel_dir = channel_dirs[channel_dir_i]  # channel_dir = "CT"
+#            channel_path = os.path.join(image_path,
+#                                        channel_dir)  # "~/data/Patient 1/CT"
+#            files = self._listdir(channel_path)  # ["im1.ext", "im2.ext"]
+#
+#            # Check that channels have the same length
+#            if channel_length is None:
+#                channel_length = len(files)
+#            else:
+#                if channel_length != len(files):
+#                    raise RuntimeError("The numbers of slices for channel %s "
+#                                       "and channel %s do not agree."
+#                                       % (channel_dir, channel_dirs[0]))
+#
+#            # TODO: Also check image sizes within a channel.
+#
+#            # Create full relative or absolute path for all slices
+#            full_file_names = []
+#            for file in files:
+#                file = os.path.join(channel_path,
+#                                    file)  # "~/data/.../CT/im1.ext"
+#
+#                full_file_names.append(file)  # ["~/data/.../im1.ext"]
+#
+#            # {"CT": ["~/data/Patient 1/CT/im1.dcm"]}
+#            if self.channel_output_names is not None:
+#                channel_dir = self.channel_output_names[channel_dir_i]
+#            all_channel_files.append(full_file_names)
+#            all_channel_names.append(channel_dir)
+#
+#        # [[...], [...]], ["CT", "MR"]
+#        return all_channel_files, all_channel_names
+
+    def __getitem__(self, index):
+
+        # Use cache and in cache?
+        if self._use_cache() and self._in_cache(index):
+            image = dict(self._cache[index][0])  # Use stored data
+        else:
+            images = self._all_images[index]
+            image = {}
+            for channel_i in range(len(self._image_names)):
+                channel = self._image_names[channel_i]
+                channel_image = self._read_image(images[channel_i])
+
+                # channel_image = channel_image[np.newaxis, ...]
+
+                image[channel] = channel_image
+
+            if self._use_cache():
+                self._put_cache(index, image)
 
         # Perform transform last, then augmentation will work as well
         if self.transform is not None:
@@ -2673,7 +3121,7 @@ class Numpy3DDataset(NumpyDataset):
         return image
 
     def __len__(self):
-        return len(self._filtered_image_names)
+        return len(self._all_images)
 
 
 class ArrayDataset(BaseDataset):
@@ -2804,7 +3252,17 @@ class Dicom3DWriter(object):
                           slice_name=slice_name,
                           tags=tags)
 
-    def write(self, images, image_name, slice_name=None, tags=dict()):
+    def write(self,
+              images,
+              image_name,
+              slice_name=None,
+              tags={pydicom.tag.Tag(0x0028, 0x0030): "1.0\\1.0",  # PixelSpacing [mm]
+                    pydicom.tag.Tag(0x0018, 0x0050): "3.0",  # SliceThickness [mm]
+                    pydicom.tag.Tag(0x0018, 0x0088): "3.0",  # SpacingBetweenSlices [mm]
+                    pydicom.tag.Tag(0x0008, 0x0060): "CT",  # Modality (string)
+                    pydicom.tag.Tag(0x0020, 0x0037): "1\\0\\0\\0\\1\\0",  # ImageOrientationPatient
+                    pydicom.tag.Tag(0x0020, 0x0032): "-200.0\\-240.0\\-100.0",  # ImageOrientationPatient [mm]
+                    }):
         """Performs the actual writing to Dicom files on disk.
 
         Parameters
@@ -2855,7 +3313,7 @@ class Dicom3DWriter(object):
         if not isinstance(tags, dict):
             raise ValueError("The 'tags' must be a dict.")
         for tag in tags.keys():
-            if not isinstance(tag, pydicom.tag.Tag):
+            if not isinstance(tag, pydicom.tag.BaseTag):
                 raise ValueError("The keys of 'tags' must be of type 'Tag'.")
 
         if not os.path.exists(self.path):
@@ -2893,11 +3351,16 @@ class Dicom3DWriter(object):
             bits_stored = 16
             dicom_max_value = int(2**bits_stored - 1)
             if max_value <= dicom_max_value:
-                slope = 1.0
+                slope = max_value / float(dicom_max_value)
+                # slope = 1.0
             else:
                 slope = float(dicom_max_value) / max_value
-                image = image / slope
-            image = np.round(image).astype(np.int16)
+            image = image / slope
+            image = np.round(image + 0.5).astype(np.int16)
+
+            series_instance_uid = ("1.%d.%d" % (channel_id,
+                                                uid)) \
+                + "." + ("%.20f" % time.time())[6:]
 
             # slice_i = 0
             for slice_i in range(num_slices):
@@ -2906,14 +3369,29 @@ class Dicom3DWriter(object):
                                         slice_name % (slice_i + 1,))
 
                 file_meta = pydicom.dataset.Dataset()
-                file_meta.MediaStorageSOPClassUID = "CT Image Storage"
-                file_meta.MediaStorageSOPInstanceUID = "1.%d.%d.%d" \
-                                                       % (channel_id,
-                                                          slice_i,
-                                                          uid)
+
+                sop_class_uid = "1.2.840.10008.5.1.4.1.1.4"
+                sop_instance_uid = ("1.%d.%d.%d" % (channel_id,
+                                                    slice_i,
+                                                    uid)) \
+                    + "." + ("%.20f" % time.time())[6:]
+
                 uid += 1
+
+                file_meta.MediaStorageSOPClassUID = sop_class_uid
+                file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
+
                 file_meta.ImplementationClassUID = "2.3.7.6.1.2.%s" \
                                                    % (nethin.__version__,)
+
+                # Implicit VR Little Endian
+                file_meta.TransferSyntaxUID = "1.2.840.10008.1.2"
+
+                # Add custom metadata tags
+                for tag in tags.keys():
+                    value = tags[tag]
+                    if tag.group == 0x0002:
+                        file_meta[tag] = value
 
                 data = pydicom.dataset.FileDataset(filename, {},
                                                    file_meta=file_meta,
@@ -2950,8 +3428,51 @@ class Dicom3DWriter(object):
                 data.PixelRepresentation = 0  # Unsigned
                 data.NumberOfFrames = 1
 
+                data.SOPClassUID = sop_class_uid
+                data.SOPInstanceUID = sop_instance_uid
+                data.SeriesInstanceUID = series_instance_uid
+                data.StudyDate = dt.strftime("%Y%m%d")
+
+                data.Manufacturer = "Nethin"
+                # Manufacturer's Model Name
+                data.ManufacturerModelName = "Dicom3DWriter"
+                # [pydicom.tag.Tag(0x0008, 0x1090)] = "Dicom3DWriter"
+
+                if pydicom.tag.Tag(0x0018, 0x0088) in tags:
+                    spacing_between_slices = float(tags[pydicom.tag.Tag(0x0018, 0x0088)])
+                else:
+                    spacing_between_slices = 3.0
+
+                if pydicom.tag.Tag(0x0020, 0x0032) in tags:
+                    image_orientation_patient = str(tags[pydicom.tag.Tag(0x0020, 0x0032)])
+                    parts = image_orientation_patient.split("\\")
+                    if len(parts) != 3:
+                        raise ValueError("ImageOrientationPatient tag has the "
+                                         "wrong format.")
+                    image_orientation_patient = "\\".join(parts[:-1]) + "\\"
+                    image_orientation_patient_z = float(parts[-1])
+                else:
+                    image_orientation_patient = "-200.0\\-240.0\\"
+                    image_orientation_patient_z = -100.0
+
+                # Add custom data tags
                 for tag in tags.keys():
-                    data[tag] = tags[tag]
+                    value = tags[tag]
+                    if tag.group != 0x0002:
+
+                        # Update the ImageOrientationPatient tag for each slice
+                        if tag == pydicom.tag.Tag(0x0020, 0x0032):
+                            value = image_orientation_patient \
+                                + str(image_orientation_patient_z
+                                      + slice_i * float(spacing_between_slices))
+
+                        vr, _, _, _, keyword = pydicom.datadict.get_entry(tag)
+                        data.add_new(tag, vr, value)
+
+                        # if tag == pydicom.tag.Tag(0x0028, 0x0030):
+                        #     data.PixelSpacing = value
+                        # else:
+                        #     data[tag].value = value
 
                 data.save_as(filename)
 

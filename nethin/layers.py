@@ -9,11 +9,13 @@ Created on Thu Oct 12 14:35:08 2017
 @license: BSD 3-clause.
 """
 import six
+from distutils.version import LooseVersion
 
 from enum import Enum
 
 import tensorflow as tf
 
+import keras
 import keras.backend as K
 from keras.utils import conv_utils
 try:
@@ -980,12 +982,27 @@ class Convolution2DTranspose(convolutional.Convolution2DTranspose):
             batch_size = inputs.get_shape()[0]
 
             # Infer the dynamic output shape:
-            out_height = conv_utils.deconv_length(height,
-                                                  stride_h, kernel_h,
-                                                  self.padding)
-            out_width = conv_utils.deconv_length(width,
-                                                 stride_w, kernel_w,
-                                                 self.padding)
+            if LooseVersion(keras.__version__) >= LooseVersion("2.2.1"):
+                # TODO: Better value for output_padding?
+                out_height = conv_utils.deconv_length(height,
+                                                      stride_h,
+                                                      kernel_h,
+                                                      self.padding,
+                                                      None)  # output_padding
+                out_width = conv_utils.deconv_length(width,
+                                                     stride_w,
+                                                     kernel_w,
+                                                     self.padding,
+                                                     None)  # output_padding
+            else:
+                out_height = conv_utils.deconv_length(height,
+                                                      stride_h,
+                                                      kernel_h,
+                                                      self.padding)
+                out_width = conv_utils.deconv_length(width,
+                                                     stride_w,
+                                                     kernel_w,
+                                                     self.padding)
 
             if self.data_format == "channels_last":
                 output_shape = (batch_size,

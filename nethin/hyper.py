@@ -13,6 +13,7 @@ Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 import abc
 import copy
 import inspect
+import numbers
 
 import numpy as np
 import scipy.optimize
@@ -21,16 +22,18 @@ import scipy.stats as stats
 import nethin.utils as utils
 import nethin.consts as consts
 
-try:
-    import skopt
-    _HAS_SKOPT = True
-except ModuleNotFoundError:
-    skopt = None
-    _HAS_SKOPT = False
+
+def import_skopt(message="This operation requires 'scikit-optimize'."):
+    try:
+        import skopt
+    except ModuleNotFoundError:
+        raise RuntimeError(message)
+
+    return skopt
 
 
 __all__ = ["UniformPrior", "LogUniformPrior",
-           "Real", "Integer",
+           "Boolean", "Real", "Integer", "Categorical", "Constant",
            "Space",
            "GaussianProcessRegression",
            "HyperParameterOptimization"]
@@ -284,8 +287,8 @@ class Boolean(Dimension):
         return ret
 
     def _to_skopt(self):
-        if not _HAS_SKOPT:
-            raise RuntimeError("This operation requires 'scikit-optimize'.")
+
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -296,14 +299,14 @@ class Boolean(Dimension):
         for i in range(size):
             if isinstance(self.prior, DiscretePrior):
                 dims.append(skopt.space.Categorical(
-                        [False, True],
+                        [0, 1],
                         prior=self.prior.probabilities,
                         transform="identity",
                         name=self.name))
 
             elif isinstance(self.prior, UniformPrior):
                 dims.append(skopt.space.Categorical(
-                        [False, True],
+                        [0, 1],
                         prior=None,  # None == uniform here
                         transform="identity",
                         name=self.name))
@@ -332,8 +335,7 @@ class Real(Dimension):
         return value.astype(np.float)
 
     def _to_skopt(self):
-        if not _HAS_SKOPT:
-            raise RuntimeError("This operation requires 'scikit-optimize'.")
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -387,8 +389,7 @@ class Integer(Dimension):
             return (value + 0.5).astype(np.int)
 
     def _to_skopt(self):
-        if not _HAS_SKOPT:
-            raise RuntimeError("This operation requires 'scikit-optimize'.")
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -457,8 +458,7 @@ class Categorical(Dimension):
         return ret
 
     def _to_skopt(self):
-        if not _HAS_SKOPT:
-            raise RuntimeError("This operation requires 'scikit-optimize'.")
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -471,14 +471,14 @@ class Categorical(Dimension):
                 dims.append(skopt.space.Categorical(
                         self.categories,
                         prior=self.prior.probabilities,
-                        transform="identity",
+                        transform="onehot",
                         name=self.name))
 
             elif isinstance(self.prior, UniformPrior):
                 dims.append(skopt.space.Categorical(
                         self.categories,
                         prior=None,  # None == uniform here
-                        transform="identity",
+                        transform="onehot",
                         name=self.name))
             else:
                 raise RuntimeError("This operation uses 'scikit-optimize', "
@@ -487,56 +487,100 @@ class Categorical(Dimension):
         return dims
 
 
+class Constant(Dimension):
+    """Represents a constant value.
+    """
+    def __init__(self,
+                 name,
+                 value,
+                 prior=None,
+                 size=None,
+                 **kwargs):
+
+        if prior is None:
+            prior = UniformPrior(0.0, 0.0)
+
+        super(Constant, self).__init__(name,
+                                       prior,
+                                       size=size)
+
+        if not isinstance(value, (int, float)):
+            raise ValueError("The value should be an int or a float.")
+        self.value = value
+
+    def rvs(self, size=None, random_state=None):
+
+        if isinstance(self.value, bool):
+            ret = np.ones(self.size, dtype=bool) * self.value
+
+        elif isinstance(self.value, numbers.Integral):
+            ret = np.ones(self.size, dtype=int) * self.value
+
+        elif isinstance(self.value, numbers.Real):
+            ret = np.ones(self.size, dtype=float) * self.value
+
+        else:
+            ret = np.ones(self.size, dtype=type(self.value)) * self.value
+
+        return ret
+
+    def _to_skopt(self):
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+
+        if self.size is not None:
+            size = np.prod(self.size)
+        else:
+            size = 1
+
+        dims = []
+        for i in range(size):
+            dims.append(skopt.space.Categorical([self.value],
+                                                transform="identity",
+                                                name=self.name))
+
+        return dims
+
+
 class Space(object):
 
-    def __init__(self, dimensions):
+    def __init__(self, dimensions=[], unflatten_dict=False):
+
         if not isinstance(dimensions, (list, tuple)):
             raise ValueError("The 'dimensions' should be a list/tuple with "
                              "elements of type 'Dimension'.")
-        self.dimensions = []
-        names = set()
+        self.dimensions = {}
         for dim in dimensions:
-            if not isinstance(dim, Dimension):
-                raise ValueError("The 'dimensions' should be a list/tuple "
-                                 "with elements of type 'Dimension'.")
-            else:
-                if dim.name in names:
-                    raise ValueError("Two dimensions can not have the same "
-                                     "name (%s)." % (dim.name,))
-                else:
-                    names.add(dim.name)
+            self.add(dim)
 
-                self.dimensions.append(dim)
-
-        if len(names) != len(self.dimensions):
-            raise ValueError()
+        self.unflatten_dict = bool(unflatten_dict)
 
     def rvs(self, size=None, random_state=None):
 
         random_state = utils.normalize_random_state(random_state)
 
         dims = {}
-        for dim in self.dimensions:
-            dims[dim.name] = dim.rvs(size=size, random_state=random_state)
+        for dim_name in self.dimensions.keys():
+            dims[dim_name] = self.dimensions[dim_name].rvs(
+                    size=size, random_state=random_state)
 
         return dims
 
     def is_categorical(self):
 
-        return all([isinstance(dim, Categorical) for dim in self.dimensions])
+        return all([isinstance(dim, Categorical)
+                    for dim in self.dimensions.values()])
 
     def num_dim_normalized(self):
 
         return sum([1 if dim.size is None else np.prod(dim.size)
-                    for dim in self.dimensions])
+                    for dim in self.dimensions.values()])
 
     def _to_skopt(self):
 
-        if not _HAS_SKOPT:
-            raise RuntimeError("This operation requires 'scikit-optimize'.")
+        import_skopt("This operation requires 'scikit-optimize'.")
 
         dims = []
-        for dim in self.dimensions:
+        for dim in self.dimensions.values():
             dim_ = dim._to_skopt()
             if isinstance(dim_, list):
                 dims.extend(dim_)
@@ -544,6 +588,17 @@ class Space(object):
                 dims.append(dim_)
 
         return dims
+
+    def add(self, dim):
+
+        if not isinstance(dim, Dimension):
+            raise ValueError("The 'dim' should be of type 'Dimension'.")
+        else:
+            if dim.name in self.dimensions:
+                raise ValueError("Two dimensions can not have the same name "
+                                 "(%s)." % (dim.name,))
+
+            self.dimensions[dim.name] = dim
 
     def unflatten(self, dims):
         """
@@ -581,9 +636,12 @@ class Space(object):
         >>> unflattened[2].shape
         (2,)
         """
-        unflat_dims = []
+        if self.unflatten_dict:
+            unflat_dims = {}
+        else:
+            unflat_dims = []
         i = 0
-        for dim in self.dimensions:
+        for dim in self.dimensions.values():
             if dim.size is None:
                 numel = 1
                 shape = (1,)
@@ -599,7 +657,10 @@ class Space(object):
             vals = np.asarray(vals)
             vals = vals.reshape(*shape)
 
-            unflat_dims.append(vals)
+            if self.unflatten_dict:
+                unflat_dims[dim.name] = vals
+            else:
+                unflat_dims.append(vals)
 
         return unflat_dims
 
@@ -633,9 +694,19 @@ class BaseAcquisitionOptimizer(abc.ABC):
 
 
 class LBFGS(BaseAcquisitionOptimizer):
-
+    """The acquisition function is minimised using the limited memory BFGS
+    algorithm.
+    """
     def _to_skopt(self):
         return "lbfgs"
+
+
+class Sampling(BaseAcquisitionOptimizer):
+    """The minimum is found as the smallest value found when evaluating the
+    acquisition function at randomly sampled points in the search space.
+    """
+    def _to_skopt(self):
+        return "sampling"
 
 
 class BaseMinimizer(abc.ABC):
@@ -657,12 +728,12 @@ class GaussianProcessRegression(BaseMinimizer):
                  result=None,
                  random_state=None):
 
-        if not _HAS_SKOPT:
-            raise ValueError("This minimiser requires 'scikit-optimize'.")
+        skopt = import_skopt("This operation requires 'scikit-optimize'.")
 
         if not isinstance(space, Space):
             raise ValueError("The 'space' must be of type 'Space'.")
         self.dimensions = skopt.utils.normalize_dimensions(space._to_skopt())
+        self._space = space
 
         if noise is None:
             self.noise = None
@@ -672,6 +743,11 @@ class GaussianProcessRegression(BaseMinimizer):
         if not isinstance(acquisition_function, BaseAcquisitionFunction):
             raise ValueError("The 'acquisition_function' must be of type "
                              "'BaseAcquisitionFunction'.")
+        if space.is_categorical() \
+                and (not isinstance(acquisition_function.optimizer, Sampling)):
+            raise ValueError("The space contains only categorical variables, "
+                             "use the Sampling optimizer for the acquisition "
+                             "function.")
         self.acquisition_function = acquisition_function._to_skopt()
 
         self.acquisition_optimizer = \
@@ -790,11 +866,11 @@ class GaussianProcessRegression(BaseMinimizer):
                 y0 = self.result.func_vals
 
                 for i in range(len(X0)):
-                    result = self.optimizer.tell(X0[i], y0[i])
+                    result = self.optimizer_.tell(X0[i], y0[i])
                     result.specs = specs
 
         next_x = self.optimizer_.ask()
-        next_y = f(next_x)
+        next_y = f(self._space.unflatten(next_x))
         result = self.optimizer_.tell(next_x, next_y)
         result.specs = specs
 

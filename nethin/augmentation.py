@@ -46,14 +46,10 @@ class BaseAugmentation(metaclass=abc.ABCMeta):
                  data_format=None,
                  random_state=None):
 
-        try:
-            # New place
-            from keras.backend.common import normalize_data_format
-        except ImportError:
-            # Old place
-            from keras.utils.conv_utils import normalize_data_format
+        from tensorflow.python import keras as tf_keras
 
-        self.data_format = normalize_data_format(data_format)
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__  # Numpy built-in

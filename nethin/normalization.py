@@ -10,17 +10,12 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-import keras.backend as K
-# K = utils.LazyImport("keras.backend")  # import keras.backend as K
-import keras.engine as keras_engine
-# keras_engine = utils.LazyImport("keras.engine")  # import keras.engine
-import keras.engine.topology as keras_engine_topology
-# keras_engine_topology = utils.LazyImport("keras.engine.topology")
+from tensorflow.python import keras as tf_keras
 
 __all__ = ["InstanceNormalization2D"]
 
 
-class InstanceNormalization2D(keras_engine_topology.Layer):
+class InstanceNormalization2D(tf_keras.engine.base_layer.Layer):
     """Instance normalisation layer.
 
     Adapted from:
@@ -44,26 +39,25 @@ class InstanceNormalization2D(keras_engine_topology.Layer):
 
     Examples
     --------
-    >>> import parsimony.functions.neural as neural
-    >>> from keras.layers import Input
-    >>> from keras.models import Model
-    >>> from keras import optimizers
     >>> import numpy as np
+    >>> import tensorflow.keras as tf_keras
+    >>>
+    >>> from nethin.normalization import InstanceNormalization2D
     >>>
     >>> A = np.arange(12).reshape(3, 4).astype(np.float32)
     >>>
-    >>> inputs = Input(shape=(3, 4, 1))
-    >>> x = neural.InstanceNormalization2D(axis=3)(inputs)
-    >>> model = Model(inputs=inputs, outputs=x)
+    >>> inputs = tf_keras.layers.Input(shape=(3, 4, 1))
+    >>> x = InstanceNormalization2D(axis=3)(inputs)
+    >>> model = tf_keras.models.Model(inputs=inputs, outputs=x)
     >>> B = model.predict(A.reshape(1, 3, 4, 1)).reshape(3, 4)
     >>> np.abs(np.sum(B)) < 5e-7
     True
-    >>> np.abs(np.var(B) - 1.0) < 5e-7
+    >>> np.abs(np.std(B) - 1.0) < 5e-7
     True
     >>>
-    >>> inputs = Input(shape=(1, 3, 4))
-    >>> x = neural.InstanceNormalization2D(axis=1)(inputs)
-    >>> model = Model(inputs=inputs, outputs=x)
+    >>> inputs = tf_keras.layers.Input(shape=(1, 3, 4))
+    >>> x = InstanceNormalization2D(axis=1)(inputs)
+    >>> model = tf_keras.models.Model(inputs=inputs, outputs=x)
     >>> B = model.predict(A.reshape(1, 1, 3, 4)).reshape(3, 4)
     >>> np.abs(np.sum(B)) < 5e-7
     True
@@ -78,7 +72,7 @@ class InstanceNormalization2D(keras_engine_topology.Layer):
         self.center = bool(center)
         self.scale = bool(scale)
 
-        self.input_spec = keras_engine.InputSpec(ndim=4)
+        self.input_spec = tf_keras.engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 
@@ -115,6 +109,8 @@ class InstanceNormalization2D(keras_engine_topology.Layer):
 
     def call(self, x, mask=None):
 
+        from tensorflow.keras import backend as K
+
         def image_expand(tensor):
             return K.expand_dims(K.expand_dims(tensor, -1), -1)
 
@@ -148,3 +144,8 @@ class InstanceNormalization2D(keras_engine_topology.Layer):
         y = (x - mu_vec) / (K.sqrt(sig2) + K.epsilon())
 
         return gamma * y + beta
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()

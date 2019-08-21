@@ -13,9 +13,6 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 import abc
 from six import with_metaclass
 
-import keras.backend as K
-from keras.utils import conv_utils
-
 __all__ = ["BaseConstraint", "BoxConstraint"]
 
 
@@ -34,6 +31,8 @@ class BaseConstraint(with_metaclass(abc.ABCMeta, object)):
         it, then it will be "channels_last".
     """
     def __init__(self, data_format=None):
+
+        from tensorflow.keras.utils import conv_utils
 
         self.data_format = conv_utils.normalize_data_format(data_format)
 
@@ -90,4 +89,6 @@ class BoxConstraint(BaseConstraint):
         inputs : Tensor
             The weight matrix for which the constraint should be applied.
         """
+        import tensorflow.keras.backend as K
+
         return K.clip(weights, self.lower, self.upper)

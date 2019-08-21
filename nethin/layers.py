@@ -9,24 +9,11 @@ Created on Thu Oct 12 14:35:08 2017
 @license: BSD 3-clause.
 """
 import six
+from enum import Enum
 from distutils.version import LooseVersion
 
-from enum import Enum
-
 import tensorflow as tf
-
-import keras
-import keras.backend as K
-from keras.utils import conv_utils
-try:
-    from keras.utils.conv_utils import normalize_data_format
-except ImportError:
-    from keras.backend.common import normalize_data_format
-from keras.engine import InputSpec
-from keras.engine.topology import Layer
-import keras.layers.convolutional as convolutional
-import keras.layers.pooling as pooling
-from keras.layers.pooling import MaxPooling2D as keras_MaxPooling2D
+from tensorflow.python import keras as tf_keras
 
 __all__ = ["MaxPooling2D_", "MaxUnpooling2D_",
            "MaxPoolingMask2D", "MaxUnpooling2D",
@@ -34,7 +21,7 @@ __all__ = ["MaxPooling2D_", "MaxUnpooling2D_",
            "Convolution2DTranspose", "Resampling2D"]
 
 
-class MaxPoolingMask2D(Layer):
+class MaxPoolingMask2D(tf_keras.engine.base_layer.Layer):
     """A max layer for 2D images that only computes the pooling mask.
 
     Parameters
@@ -113,12 +100,14 @@ class MaxPoolingMask2D(Layer):
 
         super(MaxPoolingMask2D, self).__init__(**kwargs)
 
-        self.pool_size = conv_utils.normalize_tuple(pool_size, 2, "pool_size")
+        self.pool_size = tf_keras.utils.conv_utils.normalize_tuple(
+                pool_size, 2, "pool_size")
         self.strides = self.pool_size  # TODO: Allow other strides!
-        self.padding = conv_utils.normalize_padding(padding)
-        self.data_format = normalize_data_format(data_format)
+        self.padding = tf_keras.utils.conv_utils.normalize_padding(padding)
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
-        self.input_spec = InputSpec(ndim=4)
+        self.input_spec = tf_keras.engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 
@@ -171,7 +160,7 @@ class MaxPoolingMask2D(Layer):
         return mask
 
 
-class MaxPooling2D_(Layer):
+class MaxPooling2D_(tf_keras.engine.base_layer.Layer):
     """A max pooling layer for 2D images that also computes the pooling mask.
 
     Parameters
@@ -244,15 +233,17 @@ class MaxPooling2D_(Layer):
 
         super(MaxPooling2D_, self).__init__(**kwargs)
 
-        self.pool_size = conv_utils.normalize_tuple(pool_size, 2, "pool_size")
+        self.pool_size = tf_keras.utils.conv_utils.normalize_tuple(
+                pool_size, 2, "pool_size")
         self.strides = self.pool_size  # TODO: Allow other strides!
-        self.padding = conv_utils.normalize_padding(padding)
-        self.data_format = normalize_data_format(data_format)
+        self.padding = tf_keras.utils.conv_utils.normalize_padding(padding)
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
         self.compute_mask_ = bool(compute_mask)
 
         self.mask = None
 
-        self.input_spec = InputSpec(ndim=4)
+        self.input_spec = tf_keras.engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 
@@ -267,10 +258,14 @@ class MaxPooling2D_(Layer):
             rows = input_shape[2]
             cols = input_shape[3]
 
-        rows = conv_utils.conv_output_length(rows, self.pool_size[0],
-                                             self.padding, self.strides[0])
-        cols = conv_utils.conv_output_length(cols, self.pool_size[1],
-                                             self.padding, self.strides[1])
+        rows = tf_keras.utils.conv_utils.conv_output_length(rows,
+                                                            self.pool_size[0],
+                                                            self.padding,
+                                                            self.strides[0])
+        cols = tf_keras.utils.conv_utils.conv_output_length(cols,
+                                                            self.pool_size[1],
+                                                            self.padding,
+                                                            self.strides[1])
         if self.data_format == "channels_last":
             return (input_shape[0], rows, cols, input_shape[3])
         else:  # self.data_format == "channels_first":
@@ -329,16 +324,17 @@ class MaxPooling2D_(Layer):
             outputs, mask = self._maxpool(inputs)
             self.mask = mask
         else:
-            outputs = keras_MaxPooling2D(pool_size=self.pool_size,
-                                         strides=self.strides,
-                                         padding=self.padding,
-                                         data_format=self.data_format)(inputs)
+            outputs = tf_keras.layers.MaxPooling2D(
+                    pool_size=self.pool_size,
+                    strides=self.strides,
+                    padding=self.padding,
+                    data_format=self.data_format)(inputs)
             self.mask = None
 
         return outputs
 
 
-class MaxUnpooling2D(Layer):
+class MaxUnpooling2D(tf_keras.engine.base_layer.Layer):
     """A max unpooling layer for 2D images that can also use a pooling mask.
 
     Parameters
@@ -388,12 +384,12 @@ class MaxUnpooling2D(Layer):
     >>> outputs = mp(inputs)
     >>> model = Model(inputs, outputs)
     >>> X = np.random.rand(1, 4, 4, 1)
-    >>> X[0, :, :, 0]
+    >>> X[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 0.37454012,  0.95071431,  0.73199394,  0.59865848],
            [ 0.15601864,  0.15599452,  0.05808361,  0.86617615],
            [ 0.60111501,  0.70807258,  0.02058449,  0.96990985],
            [ 0.83244264,  0.21233911,  0.18182497,  0.18340451]])
-    >>> model.predict_on_batch(X)[0, :, :, 0]
+    >>> model.predict_on_batch(X)[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
     array([[ 0.95071429,  0.86617613],
            [ 0.83244264,  0.96990985]], dtype=float32)
     >>> mup = layers.MaxUnpooling2D(pool_size=(2, 2), strides=(2, 2),
@@ -402,10 +398,11 @@ class MaxUnpooling2D(Layer):
     >>> outputs2 = mup(pooled, indices=mp.mask)
     >>> model2 = Model(inputs, outputs2)
     >>> model2.predict_on_batch(X)[0, :, :, 0]
-    array([[ 0.        ,  0.95071429,  0.        ,  0.        ],
-           [ 0.        ,  0.        ,  0.        ,  0.86617613],
-           [ 0.        ,  0.        ,  0.        ,  0.96990985],
-           [ 0.83244264,  0.        ,  0.        ,  0.        ]], dtype=float32)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[ 0.        , 0.95071429, 0.        , 0.        ],
+           [ 0.        , 0.        , 0.        , 0.86617613],
+           [ 0.        , 0.        , 0.        , 0.96990985],
+           [ 0.83244264, 0.        , 0.        , 0.        ]], dtype=float32)
     """
     def __init__(self,
                  pool_size=(2, 2),
@@ -417,11 +414,13 @@ class MaxUnpooling2D(Layer):
 
         super(MaxUnpooling2D, self).__init__(**kwargs)
 
-        self.pool_size = conv_utils.normalize_tuple(pool_size, 2, "pool_size")
+        self.pool_size = tf_keras.utils.conv_utils.normalize_tuple(
+                pool_size, 2, "pool_size")
         self.strides = (2, 2)
         self.padding = "same"
         self.fill_zeros = bool(fill_zeros)
-        self.data_format = normalize_data_format(data_format)
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
     def build(self, input_shape):
 
@@ -610,7 +609,7 @@ class MaxUnpooling2D(Layer):
 
 
 # TODO: Remove!
-class MaxUnpooling2D_(Layer):
+class MaxUnpooling2D_(tf_keras.engine.base_layer.Layer):
     """A max unpooling layer for 2D images that can also use a pooling mask.
 
     Parameters
@@ -694,12 +693,14 @@ class MaxUnpooling2D_(Layer):
 
         super(MaxUnpooling2D_, self).__init__(**kwargs)
 
-        self.pool_size = conv_utils.normalize_tuple(pool_size, 2, "pool_size")
+        self.pool_size = tf_keras.utils.conv_utils.normalize_tuple(
+                pool_size, 2, "pool_size")
         self.strides = (2, 2)
         self.padding = "same"
         self.mask = mask
         self.fill_zeros = bool(fill_zeros)
-        self.data_format = normalize_data_format(data_format)
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
     def build(self, input_shape):
 
@@ -893,7 +894,7 @@ class MaxUnpooling2D_(Layer):
 #        return cond
 
 
-class MaxPooling1D(pooling.MaxPooling1D):
+class MaxPooling1D(tf_keras.layers.MaxPooling1D):
     """Keras' ``MaxPooling1D`` requires the input be in "channels_last" data
     format. This layer adds functionality for both "channels_last" and
     "channels_first".
@@ -907,17 +908,17 @@ class MaxPooling1D(pooling.MaxPooling1D):
     def call(self, inputs, *args, **kwargs):
 
         if self._data_format == "channels_first":
-            inputs = K.permute_dimensions(inputs, (0, 2, 1))
+            inputs = tf_keras.backend.permute_dimensions(inputs, (0, 2, 1))
 
         outputs = super(MaxPooling1D, self).call(inputs, *args, **kwargs)
 
         if self._data_format == "channels_first":
-            outputs = K.permute_dimensions(outputs, (0, 2, 1))
+            outputs = tf_keras.backend.permute_dimensions(outputs, (0, 2, 1))
 
         return outputs
 
 
-class Convolution1D(convolutional.Convolution1D):
+class Convolution1D(tf_keras.layers.Convolution1D):
     """Keras' ``Convolution1D`` requires the input be in "channels_last" data
     format. This layer adds functionality for both "channels_last" and
     "channels_first".
@@ -931,17 +932,17 @@ class Convolution1D(convolutional.Convolution1D):
     def call(self, inputs, *args, **kwargs):
 
         if self._data_format == "channels_first":
-            inputs = K.permute_dimensions(inputs, (0, 2, 1))
+            inputs = tf_keras.backend.permute_dimensions(inputs, (0, 2, 1))
 
         outputs = super(Convolution1D, self).call(inputs, *args, **kwargs)
 
         if self._data_format == "channels_first":
-            outputs = K.permute_dimensions(outputs, (0, 2, 1))
+            outputs = tf_keras.backend.permute_dimensions(outputs, (0, 2, 1))
 
         return outputs
 
 
-class Convolution2DTranspose(convolutional.Convolution2DTranspose):
+class Convolution2DTranspose(tf_keras.layers.Convolution2DTranspose):
     """Fixes an output shape error of ``Convolution2DTranspose``.
 
     Described in Tensorflow issue # 8972:
@@ -972,7 +973,7 @@ class Convolution2DTranspose(convolutional.Convolution2DTranspose):
 
         if not outputs.get_shape().is_fully_defined():
 
-            input_shape = K.int_shape(inputs)
+            input_shape = tf_keras.backend.int_shape(inputs)
             if self.data_format == "channels_last":
                 height, width = input_shape[1], input_shape[2]
             else:
@@ -982,27 +983,31 @@ class Convolution2DTranspose(convolutional.Convolution2DTranspose):
             batch_size = inputs.get_shape()[0]
 
             # Infer the dynamic output shape:
-            if LooseVersion(keras.__version__) >= LooseVersion("2.2.1"):
+            if LooseVersion(tf_keras.__version__) >= LooseVersion("2.2.1"):
                 # TODO: Better value for output_padding?
-                out_height = conv_utils.deconv_length(height,
-                                                      stride_h,
-                                                      kernel_h,
-                                                      self.padding,
-                                                      None)  # output_padding
-                out_width = conv_utils.deconv_length(width,
-                                                     stride_w,
-                                                     kernel_w,
-                                                     self.padding,
-                                                     None)  # output_padding
+                out_height = tf_keras.utils.conv_utils.deconv_length(
+                        height,
+                        stride_h,
+                        kernel_h,
+                        self.padding,
+                        None)  # output_padding
+                out_width = tf_keras.utils.conv_utils.deconv_length(
+                        width,
+                        stride_w,
+                        kernel_w,
+                        self.padding,
+                        None)  # output_padding
             else:
-                out_height = conv_utils.deconv_length(height,
-                                                      stride_h,
-                                                      kernel_h,
-                                                      self.padding)
-                out_width = conv_utils.deconv_length(width,
-                                                     stride_w,
-                                                     kernel_w,
-                                                     self.padding)
+                out_height = tf_keras.utils.conv_utils.deconv_length(
+                        height,
+                        stride_h,
+                        kernel_h,
+                        self.padding)
+                out_width = tf_keras.utils.conv_utils.deconv_length(
+                        width,
+                        stride_w,
+                        kernel_w,
+                        self.padding)
 
             if self.data_format == "channels_last":
                 output_shape = (batch_size,
@@ -1016,7 +1021,7 @@ class Convolution2DTranspose(convolutional.Convolution2DTranspose):
         return outputs
 
 
-class Resampling2D(convolutional.UpSampling2D):
+class Resampling2D(tf_keras.layers.UpSampling2D):
     """Resampling layer for 2D inputs.
 
     Resizes the input images to ``size``.
@@ -1160,6 +1165,8 @@ class Resampling2D(convolutional.UpSampling2D):
                     input_shape[3])
 
     def call(self, inputs):
+
+        import tensorflow.keras.backend as K
 
         if self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
             return super(Resampling2D, self).call(inputs)

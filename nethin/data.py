@@ -26,8 +26,8 @@ import collections
 
 import numpy as np
 from six import with_metaclass
-from scipy.misc import imread, imresize
 import imageio
+import PIL
 
 import nethin
 import nethin.utils as utils
@@ -43,16 +43,20 @@ try:
     _HAS_PYDICOM = True
 except (ImportError):
     try:
+        # TODO: Add a warning here. We should not support the old dicom package
         import dicom as pydicom
         _HAS_PYDICOM = True
     except (ImportError):
         _HAS_PYDICOM = False
 
-try:
-    import pandas as pd
-    _HAS_PANDAS = True
-except (ImportError):
-    _HAS_PANDAS = False
+
+def _import_pandas(message="The Pandas package is required for this to work."):
+    try:
+        import pandas
+    except (ImportError, ModuleNotFoundError):
+        raise RuntimeError(message)
+
+    return pandas
 
 
 __all__ = ["DataLoader",
@@ -73,7 +77,7 @@ __all__ = ["DataLoader",
 
 
 try:
-    # raise ImportError()
+    raise ImportError()  # TODO: CRITICAL! Bug with newer versions of PyTorch!
 
     from torch.utils.data import Dataset
     from torch.utils.data import ConcatDataset
@@ -369,19 +373,19 @@ except (ImportError):  # Copy of PyTorch code
 
                 # Nethin addition: Stack numpy arrays instead of Pytorch
                 # tensors
-                return np.concatenate([b for b in batch], axis=0)
+                return np.asarray([b for b in batch])
                 # return torch.stack([torch.from_numpy(b) for b in batch], 0)
             if elem.shape == ():  # scalars
                 py_type = float if elem.dtype.name.startswith('float') else int
                 # Nethin addition: Make numpy arrays instead of Pytorch tensors
-                return np.array(list(map(py_type, batch)))
+                return np.asarray(list(map(py_type, batch)))
                 # return numpy_type_map[elem.dtype.name](list(map(py_type,
                 #                                                 batch)))
         # Nethin addition: Use six instead of torch._six:
         elif isinstance(batch[0], float):
-            return np.array(batch)
+            return np.asarray(batch)
         elif isinstance(batch[0], six.integer_types):
-            return np.array(batch)
+            return np.asarray(batch)
         # elif isinstance(batch[0], int_classes):
         #     return torch.LongTensor(batch)
         # elif isinstance(batch[0], float):
@@ -771,9 +775,7 @@ class SQLiteDataset(BaseDataset):
 
         super().__init__(transform=transform)
 
-        if not _HAS_PANDAS:
-            raise RuntimeError("SQLiteDataset requires the Pandas package to "
-                               "work.")
+        _import_pandas("SQLiteDataset requires the Pandas package to work.")
 
         self.sqlite_file = str(sqlite_file)
         if not os.path.exists(self.sqlite_file):
@@ -838,6 +840,9 @@ class SQLiteDataset(BaseDataset):
             raise e
 
     def _read_metadata(self):
+
+        pd = _import_pandas("SQLiteDataset requires the Pandas package to "
+                            "work.")
 
         db_connection = None
         try:
@@ -1448,8 +1453,9 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
             self._cache_order = list()
             self._cache_cur_size = 0
 
-        from keras.backend.common import normalize_data_format
-        self.data_format = normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         self._filtered_image_names = self._get_image_names()
 
@@ -1581,17 +1587,19 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
         images_ = os.listdir(self.dir_path)  # "." not included here
         images = []
 
-        if "" in self.image_names:
-            images = [""]
-            self.image_names.remove("")
-
-        if "." in self.image_names:
-            if self.exact_image_names:
+        if self.image_names is not None:
+            if "" in self.image_names:
                 images = [""]
-                self.image_names.remove(".")  # TODO: Was "" here. Bug?
-            else:
-                # We don't do anything here, because it is the user's regexp
-                pass
+                self.image_names.remove("")
+
+            if "." in self.image_names:
+                if self.exact_image_names:
+                    images = [""]
+                    self.image_names.remove(".")  # TODO: Was "" here. Bug?
+                else:
+                    # We don't do anything here, because it is the user's
+                    # regexp
+                    pass
 
         for im in images_:
             if self.image_names is None:
@@ -2099,6 +2107,7 @@ class Dicom2DDataset(DicomDataset):
 
         channel_dirs = {}
         all_channel_names = None
+        # image_name = image_names[0]
         for image_name in image_names:  # "Patient 1"
             channel_dirs[image_name] = []
             # "~/data/Patient 1"
@@ -2116,9 +2125,12 @@ class Dicom2DDataset(DicomDataset):
 
             else:
                 # channel_name = ["CT.*", "[CT].*"]
+                # channel_name = channel_names[0]
                 for channel_name in channel_names:
                     found = False
+                    # channel_re = channel_name[0]
                     for channel_re in channel_name:  # channel_re = "CT.*"
+                        # channel = channel_dirs_[0]
                         for channel in channel_dirs_:  # channel = "CT"
                             if re.match(channel_re, channel):
                                 # channel_dirs = ["CT"]
@@ -2141,9 +2153,11 @@ class Dicom2DDataset(DicomDataset):
 
         all_images = list()
         channel_length = None
+        # image_name = image_names[0]
         for image_name in image_names:  # "Patient 1"
             all_channel_files = dict()
             channel_length = None
+            # channel_dir_i = 0
             for channel_dir_i in range(len(channel_dirs[image_name])):  # 0
                 # channel_dir = "CT"
                 channel_dir = channel_dirs[image_name][channel_dir_i]
@@ -3256,12 +3270,19 @@ class Dicom3DWriter(object):
               images,
               image_name,
               slice_name=None,
-              tags={pydicom.tag.Tag(0x0028, 0x0030): "1.0\\1.0",  # PixelSpacing [mm]
-                    pydicom.tag.Tag(0x0018, 0x0050): "3.0",  # SliceThickness [mm]
-                    pydicom.tag.Tag(0x0018, 0x0088): "3.0",  # SpacingBetweenSlices [mm]
-                    pydicom.tag.Tag(0x0008, 0x0060): "CT",  # Modality (string)
-                    pydicom.tag.Tag(0x0020, 0x0037): "1\\0\\0\\0\\1\\0",  # ImageOrientationPatient
-                    pydicom.tag.Tag(0x0020, 0x0032): "-200.0\\-240.0\\-100.0",  # ImageOrientationPatient [mm]
+              tags={
+                    # PixelSpacing [mm]
+                    pydicom.tag.Tag(0x0028, 0x0030): "1.0\\1.0",
+                    # SliceThickness [mm]
+                    pydicom.tag.Tag(0x0018, 0x0050): "3.0",
+                    # SpacingBetweenSlices [mm]
+                    pydicom.tag.Tag(0x0018, 0x0088): "3.0",
+                    # Modality (string)
+                    pydicom.tag.Tag(0x0008, 0x0060): "CT",
+                    # ImageOrientationPatient
+                    pydicom.tag.Tag(0x0020, 0x0037): "1\\0\\0\\0\\1\\0",
+                    # ImageOrientationPatient [mm]
+                    pydicom.tag.Tag(0x0020, 0x0032): "-200.0\\-240.0\\-100.0",
                     }):
         """Performs the actual writing to Dicom files on disk.
 
@@ -3439,12 +3460,14 @@ class Dicom3DWriter(object):
                 # [pydicom.tag.Tag(0x0008, 0x1090)] = "Dicom3DWriter"
 
                 if pydicom.tag.Tag(0x0018, 0x0088) in tags:
-                    spacing_between_slices = float(tags[pydicom.tag.Tag(0x0018, 0x0088)])
+                    spacing_between_slices = float(tags[
+                            pydicom.tag.Tag(0x0018, 0x0088)])
                 else:
                     spacing_between_slices = 3.0
 
                 if pydicom.tag.Tag(0x0020, 0x0032) in tags:
-                    image_orientation_patient = str(tags[pydicom.tag.Tag(0x0020, 0x0032)])
+                    image_orientation_patient = str(tags[
+                            pydicom.tag.Tag(0x0020, 0x0032)])
                     parts = image_orientation_patient.split("\\")
                     if len(parts) != 3:
                         raise ValueError("ImageOrientationPatient tag has the "
@@ -3462,9 +3485,9 @@ class Dicom3DWriter(object):
 
                         # Update the ImageOrientationPatient tag for each slice
                         if tag == pydicom.tag.Tag(0x0020, 0x0032):
-                            value = image_orientation_patient \
-                                + str(image_orientation_patient_z
-                                      + slice_i * float(spacing_between_slices))
+                            value = image_orientation_patient + str(
+                                    image_orientation_patient_z
+                                    + slice_i * float(spacing_between_slices))
 
                         vr, _, _, _, keyword = pydicom.datadict.get_entry(tag)
                         data.add_new(tag, vr, value)
@@ -3479,13 +3502,14 @@ class Dicom3DWriter(object):
             channel_id += 1
 
 
-Dicom3DSaver = Dicom3DWriter  # Deprecated name
+Dicom3DSaver = Dicom3DWriter  # Deprecated name for the Dicom3DWriter
 
 
 if _HAS_GENERATOR:
     class BaseGenerator(with_metaclass(abc.ABCMeta, Generator)):  # Python 3
         pass
 else:
+    # TODO: Deprecate this class and remove. We only support Python 3.
     class BaseGenerator(with_metaclass(abc.ABCMeta, object)):  # Python 2
         """Abstract base class for generators.
 
@@ -3655,11 +3679,22 @@ class ImageGenerator(BaseGenerator):
     >>> import numpy as np
     >>> from nethin.data import ImageGenerator
     """
-    def __init__(self, dir_path, recursive=False, batch_size=1,
-                 num_training=None, crop=None, size=None, flip=None,
-                 crop_center=True, keep_aspect_ratio=True, minimum_size=True,
-                 interp="bilinear", restart_generation=False, bias=None,
-                 scale=None, random_state=None):
+    def __init__(self,
+                 dir_path,
+                 recursive=False,
+                 batch_size=1,
+                 num_training=None,
+                 crop=None,
+                 size=None,
+                 flip=None,
+                 crop_center=True,
+                 keep_aspect_ratio=True,
+                 minimum_size=True,
+                 interp="bilinear",
+                 restart_generation=False,
+                 bias=None,
+                 scale=None,
+                 random_state=None):
 
         # TODO: Handle recursive and num_training!
 
@@ -3751,7 +3786,7 @@ class ImageGenerator(BaseGenerator):
     def _read_image(self, file_name):
 
         try:
-            image = imread(file_name)
+            image = np.asarray(imageio.imread(file_name))
 
             if len(image.shape) != 3:
                 return None
@@ -3775,7 +3810,18 @@ class ImageGenerator(BaseGenerator):
             else:
                 new_size = self.size
 
-            image = imresize(image, new_size, interp=self.interp)
+            # Deprecated in scipy!
+            # image = imresize(image, new_size, interp=self.interp)
+
+            interp_map = {"nearest": PIL.Image.NEAREST,
+                          "lanczos": PIL.Image.LANCZOS,
+                          "bilinear": PIL.Image.BILINEAR,
+                          "bicubic": PIL.Image.BICUBIC,
+                          "cubic": PIL.Image.CUBIC}
+            image = np.array(
+                    PIL.Image.fromarray(image).resize(
+                            new_size,
+                            resample=interp_map[self.interp]))
 
         if self.crop is not None:
             crop0 = min(image.shape[0], self.crop[0])
@@ -4215,8 +4261,9 @@ class Dicom3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
-        from keras.backend.common import normalize_data_format
-        self.data_format = normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__
@@ -4419,7 +4466,18 @@ class Dicom3DGenerator(BaseGenerator):
             else:
                 new_size = self.size
 
-            image = imresize(image, new_size, interp=self.interp)
+            # Deprecated in scipy!
+            # image = imresize(image, new_size, interp=self.interp)
+
+            interp_map = {"nearest": PIL.Image.NEAREST,
+                          "lanczos": PIL.Image.LANCZOS,
+                          "bilinear": PIL.Image.BILINEAR,
+                          "bicubic": PIL.Image.BICUBIC,
+                          "cubic": PIL.Image.CUBIC}
+            image = np.array(
+                    PIL.Image.fromarray(image).resize(
+                            new_size,
+                            resample=interp_map[self.interp]))
 
         if self.crop is not None:
             crop0 = min(image.shape[0], self.crop[0])
@@ -4702,8 +4760,9 @@ class DicomGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(self.batch_size, int(random_pool_size))
 
-        from keras.backend.common import normalize_data_format
-        self.data_format = normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         if random_state is None:
             self.random_state = np.random.random.__self__
@@ -4834,7 +4893,18 @@ class DicomGenerator(BaseGenerator):
             else:
                 new_size = self.size
 
-            image = imresize(image, new_size, interp=self.interp)
+            # Deprecated in scipy!
+            # image = imresize(image, new_size, interp=self.interp)
+
+            interp_map = {"nearest": PIL.Image.NEAREST,
+                          "lanczos": PIL.Image.LANCZOS,
+                          "bilinear": PIL.Image.BILINEAR,
+                          "bicubic": PIL.Image.BICUBIC,
+                          "cubic": PIL.Image.CUBIC}
+            image = np.array(
+                    PIL.Image.fromarray(image).resize(
+                            new_size,
+                            resample=interp_map[self.interp]))
 
         if self.crop is not None:
             crop0 = min(image.shape[0], self.crop[0])
@@ -5006,8 +5076,9 @@ class Numpy2DGenerator(BaseGenerator):
         self.pool_size = max(1, int(pool_size))
         self.randomize_order = bool(randomize_order)
 
-        from keras.backend.common import normalize_data_format
-        self.data_format = normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         self.random_state = utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
@@ -5279,8 +5350,9 @@ class Numpy3DGenerator(BaseGenerator):
         else:
             self.random_pool_size = max(1, int(random_pool_size))
 
-        from keras.backend.common import normalize_data_format
-        self.data_format = normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
         self.random_state = utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
@@ -5450,3 +5522,8 @@ class Numpy3DGenerator(BaseGenerator):
                         self.throw(StopIteration)
 
         return return_images
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()

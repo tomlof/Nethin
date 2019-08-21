@@ -8,25 +8,32 @@ Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-from nethin import augmentation
-from nethin import consts
-from nethin import data
-from nethin import hyper
-from nethin import models
-from nethin import normalization
-# from nethin import optimizers
-from nethin import padding
-from nethin import trainers
-from nethin import utils
+from nethin import consts  # no keras
+from nethin import utils  # tf.keras only
 
-# models = utils.LazyImport("nethin.models")
-# normalization = utils.LazyImport("nethin.normalization")
-# padding = utils.LazyImport("nethin.padding")
+from nethin import augmentation  # tf.keras only
+from nethin import data  # tf.keras only
+from nethin import hyper  # no keras
+
+from nethin import constraints  # tf.keras only
+from nethin import layers  # tf.keras only
+from nethin import models  # tf.keras only, but needs restructuring!
+from nethin import normalization  # tf.keras only
+from nethin import padding  # tf.keras only
+
+from nethin import trainers  # tf.keras only
+
+# from nethin import optimizers
 
 __version__ = "0.0.1"
 
-__all__ = ["augmentation", "consts", "data", "hyper", "models",
-           "normalization",
+__all__ = ["consts", "utils",
+
+           "augmentation", "data", "hyper",
+
+           "constraints", "layers", "models", "normalization", "padding",
+
            # "optimizers",
-           "padding", "trainers",
-           "utils"]
+
+           "trainers"
+           ]

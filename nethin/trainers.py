@@ -11,16 +11,13 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @license: BSD 3-clause.
 """
 import os
-import abc
-from six import with_metaclass
 import gc
+import abc
 import time
 import pickle
+from six import with_metaclass
 
 import numpy as np
-
-import keras.backend as K
-# K = utils.LazyImport("keras.backend")  # import keras.backend as K
 
 __all__ = ["BaseTraner", "BasicTrainer", "CVTrainer"]
 
@@ -372,7 +369,8 @@ class CVTrainer(BaseTraner):
                 except (ResourceExhaustedError) as e:
                     try:
                         del self.model_
-                        K.clear_session()
+                        import tensorflow.keras as tf_keras
+                        tf_keras.backend.clear_session()
                     except Exception:
                         pass
                     if cv > 0:
@@ -530,7 +528,8 @@ class CVTrainer(BaseTraner):
             if cv < self._cv_rounds - 1:
                 self.model_ = None
                 del self.model_
-                K.clear_session()
+                import tensorflow.keras as tf_keras
+                tf_keras.backend.clear_session()
                 gc.collect()
                 for i in range(5):
                     time.sleep(1)

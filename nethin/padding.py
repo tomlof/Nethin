@@ -10,20 +10,13 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-import keras.backend as K
-# K = utils.LazyImport("keras.backend")  # import keras.backend as K
-import keras.engine as keras_engine
-# keras_engine = utils.LazyImport("keras.engine")  # import keras.engine
-import keras.utils as keras_utils
-# keras_utils = utils.LazyImport("keras.utils")  # import keras.utils
-import keras.engine.topology as keras_engine_topology
-# keras_engine_topology = utils.LazyImport("keras.engine.topology")
+from tensorflow.python import keras as tf_keras
 
 __all__ = ["ReflectPadding2D"]
 
 
-class ReflectPadding2D(keras_engine_topology.Layer):
-    """Reflection-padding layer for 2D input (e.g. picture).
+class ReflectPadding2D(tf_keras.engine.base_layer.Layer):
+    """Reflection-padding layer for 2D input (e.g. an image).
 
     This layer adds rows and columns of reflected versions of the input at the
     top, bottom, left and right side of an image tensor.
@@ -48,37 +41,36 @@ class ReflectPadding2D(keras_engine_topology.Layer):
 
     Examples
     --------
-    >>> import nethin.padding as padding
-    >>> from keras.layers import Input
-    >>> from keras.models import Model
-    >>> from keras import optimizers
     >>> import numpy as np
+    >>> import tensorflow.keras as tf_keras
+    >>>
+    >>> from nethin.padding import ReflectPadding2D
     >>>
     >>> A = np.arange(12).reshape(3, 4).astype(np.float32)
     >>>
-    >>> inputs = Input(shape=(3, 4, 1))
-    >>> x = neural.ReflectPadding2D(padding=2,
-    ...                             data_format="channels_last")(inputs)
-    >>> model = Model(inputs=inputs, outputs=x)
+    >>> inputs = tf_keras.layers.Input(shape=(3, 4, 1))
+    >>> x = ReflectPadding2D(padding=2, data_format="channels_last")(inputs)
+    >>> model = tf_keras.models.Model(inputs=inputs, outputs=x)
     >>> model.predict(A.reshape(1, 3, 4, 1)).reshape(7, 8)
-    array([[ 10.,   9.,   8.,   9.,  10.,  11.,  10.,   9.],
-           [  6.,   5.,   4.,   5.,   6.,   7.,   6.,   5.],
-           [  2.,   1.,   0.,   1.,   2.,   3.,   2.,   1.],
-           [  6.,   5.,   4.,   5.,   6.,   7.,   6.,   5.],
-           [ 10.,   9.,   8.,   9.,  10.,  11.,  10.,   9.],
-           [  6.,   5.,   4.,   5.,   6.,   7.,   6.,   5.],
-           [  2.,   1.,   0.,   1.,   2.,   3.,   2.,   1.]], dtype=float32)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[10.,  9.,  8.,  9., 10., 11., 10.,  9.],
+           [ 6.,  5.,  4.,  5.,  6.,  7.,  6.,  5.],
+           [ 2.,  1.,  0.,  1.,  2.,  3.,  2.,  1.],
+           [ 6.,  5.,  4.,  5.,  6.,  7.,  6.,  5.],
+           [10.,  9.,  8.,  9., 10., 11., 10.,  9.],
+           [ 6.,  5.,  4.,  5.,  6.,  7.,  6.,  5.],
+           [ 2.,  1.,  0.,  1.,  2.,  3.,  2.,  1.]], dtype=float32)
     >>>
-    >>> inputs = Input(shape=(1, 3, 4))
-    >>> x = neural.ReflectPadding2D(padding=1,
-    ...                             data_format="channels_first")(inputs)
-    >>> model = Model(inputs=inputs, outputs=x)
+    >>> inputs = tf_keras.layers.Input(shape=(1, 3, 4))
+    >>> x = ReflectPadding2D(padding=1, data_format="channels_first")(inputs)
+    >>> model = tf_keras.models.Model(inputs=inputs, outputs=x)
     >>> model.predict(A.reshape(1, 1, 3, 4)).reshape(5, 6)
-    array([[[[  5.,   4.,   5.,   6.,   7.,   6.],
-             [  1.,   0.,   1.,   2.,   3.,   2.],
-             [  5.,   4.,   5.,   6.,   7.,   6.],
-             [  9.,   8.,   9.,  10.,  11.,  10.],
-             [  5.,   4.,   5.,   6.,   7.,   6.]]]], dtype=float32)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    array([[ 5.,  4.,  5.,  6.,  7.,  6.],
+           [ 1.,  0.,  1.,  2.,  3.,  2.],
+           [ 5.,  4.,  5.,  6.,  7.,  6.],
+           [ 9.,  8.,  9., 10., 11., 10.],
+           [ 5.,  4.,  5.,  6.,  7.,  6.]], dtype=float32)
     """
     def __init__(self, padding=(1, 1), data_format=None, **kwargs):
 
@@ -90,9 +82,10 @@ class ReflectPadding2D(keras_engine_topology.Layer):
             if len(padding) != 2:
                 raise ValueError('`padding` should have two elements. '
                                  'Found: ' + str(padding))
-            height_padding = keras_utils.conv_utils.normalize_tuple(
+
+            height_padding = tf_keras.utils.conv_utils.normalize_tuple(
                     padding[0], 2, "1st entry of padding")
-            width_padding = keras_utils.conv_utils.normalize_tuple(
+            width_padding = tf_keras.utils.conv_utils.normalize_tuple(
                     padding[1], 2, "2nd entry of padding")
             self.padding = (height_padding, width_padding)
         else:
@@ -103,10 +96,10 @@ class ReflectPadding2D(keras_engine_topology.Layer):
                              '((top_pad, bottom_pad), (left_pad, right_pad)). '
                              'Found: ' + str(padding))
 
-        self.data_format = keras_utils.conv_utils.normalize_data_format(
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
                 data_format)
 
-        self.input_spec = keras_engine.InputSpec(ndim=4)
+        self.input_spec = tf_keras.engine.InputSpec(ndim=4)
 
     def build(self, input_shape):
 
@@ -171,6 +164,8 @@ class ReflectPadding2D(keras_engine_topology.Layer):
                 - If `data_format` is `"channels_first"`:
                     `(batch, channels, padded_rows, padded_cols)`
         """
+        from tensorflow.keras import backend as K
+
         outputs = K.spatial_2d_padding(inputs,
                                        padding=self.padding,
                                        data_format=self.data_format)
@@ -212,3 +207,8 @@ class ReflectPadding2D(keras_engine_topology.Layer):
             outputs = K.concatenate([row0, row1, row2], axis=2)
 
         return outputs
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()

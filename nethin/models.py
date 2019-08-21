@@ -4,7 +4,7 @@ This module contains ready-to-use Keras-like and Keras-compatible models.
 
 Created on Mon Oct  9 13:48:25 2017
 
-Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -18,74 +18,24 @@ import warnings
 import h5py
 import numpy as np
 
-import tensorflow as tf
-import keras.backend as K
-from keras.models import Sequential, Model, load_model
-from keras.utils import conv_utils
-try:
-    from keras.utils.conv_utils import normalize_data_format
-except ImportError:
-    from keras.backend.common import normalize_data_format
-from keras.initializers import TruncatedNormal
-from keras.engine.topology import get_source_inputs
-from keras.layers.merge import Add
-from keras.layers.pooling import MaxPooling1D
-from keras.layers.pooling import MaxPooling2D, AveragePooling2D
-from keras.layers.pooling import GlobalAveragePooling2D
-from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.normalization import BatchNormalization
-from keras.layers.convolutional import Convolution1D
-from keras.layers.convolutional import Convolution2D, UpSampling2D
-from keras.layers.convolutional import Convolution2DTranspose
-from keras.layers.convolutional import ZeroPadding2D
-from keras.layers import Input, Activation, Dropout, SpatialDropout2D, Dense
-from keras.layers import Flatten, Lambda, Concatenate, Add
-from keras.layers.merge import concatenate
-from keras.optimizers import Optimizer, Adam, RMSprop
-from keras.engine import Layer
-import keras.optimizers
-import keras.activations
-import keras.initializers
-import keras.regularizers
-import keras.losses
+from tensorflow import keras as tf_keras
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Activation
+from tensorflow.keras.layers import Dense, Flatten
+from tensorflow.keras.layers import Convolution1D, Convolution2D
+from tensorflow.keras.layers import BatchNormalization, Dropout
+from tensorflow.keras.layers import MaxPooling1D, MaxPooling2D
+from tensorflow.python.keras.utils.conv_utils import normalize_data_format
 
-from nethin.utils import get_device_string, with_device, Helper
+from nethin.utils import with_device, Helper
 import nethin.consts as consts
 import nethin.utils as utils
-import nethin.padding as padding
+# import nethin.padding as padding
 import nethin.layers as layers
-import nethin.losses as losses
+# import nethin.losses as losses
 
 __all__ = ["BaseModel",
            "ConvolutionalNetwork", "FullyConvolutionalNetwork", "UNet", "GAN"]
-
-
-#def load_model(filepath, custom_objects=None, compile=True):
-#    """Loads a model saved via ``save_model``.
-#
-#    Parameters
-#    ----------
-#    filepath : str
-#        The path to the saved config file.
-#
-#    # Arguments
-#        filepath: String, path to the saved model.
-#        custom_objects: Optional dictionary mapping names
-#            (strings) to custom classes or functions to be
-#            considered during deserialization.
-#        compile: Boolean, whether to compile the model
-#            after loading.
-#    # Returns
-#        A Keras model instance. If an optimizer was found
-#        as part of the saved model, the model is already
-#        compiled. Otherwise, the model is uncompiled and
-#        a warning will be displayed. When `compile` is set
-#        to False, the compilation is omitted without any
-#        warning.
-#    # Raises
-#        ImportError: if h5py is not available.
-#        ValueError: In case of an invalid savefile.
-#    """
 
 
 class BaseModel(six.with_metaclass(abc.ABCMeta, object)):
@@ -838,18 +788,19 @@ class ConvolutionalNetwork(BaseModel):
     >>> X = np.random.randn(*input_shape)
     >>> X = X[np.newaxis, ...]
     >>>
-    >>> model = nethin.models.ConvolutionalNetwork(input_shape=input_shape,
-    ...                                            num_filters=num_filters,
-    ...                                            filter_sizes=filter_sizes,
-    ...                                            subsample=subsample,
-    ...                                            activations=activations,
-    ...                                            dense_sizes=dense_sizes,
-    ...                                            dense_activations=dense_activations,
-    ...                                            use_batch_normalization=use_batch_normalization,
-    ...                                            dropout_rate=dropout_rate,
-    ...                                            use_maxpool=use_maxpool,
-    ...                                            data_format=data_format,
-    ...                                            device=device)
+    >>> model = nethin.models.ConvolutionalNetwork(
+    ...         input_shape=input_shape,
+    ...         num_filters=num_filters,
+    ...         filter_sizes=filter_sizes,
+    ...         subsample=subsample,
+    ...         activations=activations,
+    ...         dense_sizes=dense_sizes,
+    ...         dense_activations=dense_activations,
+    ...         use_batch_normalization=use_batch_normalization,
+    ...         dropout_rate=dropout_rate,
+    ...         use_maxpool=use_maxpool,
+    ...         data_format=data_format,
+    ...         device=device)
     >>> model.input_shape
     (128, 128, 1)
     >>> X.shape
@@ -889,8 +840,7 @@ class ConvolutionalNetwork(BaseModel):
         self._input_dim = len(self.input_shape) - 1
 
         if len(num_filters) < 1:
-            raise ValueError("``num_conv_layers`` must have length at least "
-                             "1.")
+            raise ValueError("``num_filters`` must have length at least 1.")
         else:
             self.num_filters = tuple(num_filters)
 
@@ -932,8 +882,8 @@ class ConvolutionalNetwork(BaseModel):
             raise ValueError("``activations`` must be a str, or a tuple of "
                              "str or ``Activation``.")
 
-        self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
-        self.bias_regularizer = keras.regularizers.get(bias_regularizer)
+        self.kernel_regularizer = tf_keras.regularizers.get(kernel_regularizer)
+        self.bias_regularizer = tf_keras.regularizers.get(bias_regularizer)
 
         self.dense_sizes = tuple([int(s) for s in dense_sizes])
 
@@ -1098,7 +1048,7 @@ class ConvolutionalNetwork(BaseModel):
 
                 # Don't apply dropout to the last layer
                 if dropout_rate_i > 0.0 and (i < len(self.dense_sizes) - 1):
-                    x = Dropout(dropout_rate_i)(x)
+                    x = Dropout(rate=dropout_rate_i)(x)
 
         outputs = x
 
@@ -1175,14 +1125,15 @@ class FullyConvolutionalNetwork(BaseModel):
     >>> X = np.random.randn(*input_shape)
     >>> X = X[np.newaxis, ...]
     >>>
-    >>> model = nethin.models.FullyConvolutionalNetwork(input_shape=input_shape,
-    ...                                                 output_channels=output_channels,
-    ...                                                 num_filters=num_filters,
-    ...                                                 filter_sizes=filter_sizes,
-    ...                                                 activations=activations,
-    ...                                                 use_batch_normalization=use_batch_normalization,
-    ...                                                 data_format=data_format,
-    ...                                                 device=device)
+    >>> model = nethin.models.FullyConvolutionalNetwork(
+    ...         input_shape=input_shape,
+    ...         output_channels=output_channels,
+    ...         num_filters=num_filters,
+    ...         filter_sizes=filter_sizes,
+    ...         activations=activations,
+    ...         use_batch_normalization=use_batch_normalization,
+    ...         data_format=data_format,
+    ...         device=device)
     >>> model.input_shape
     (128, 128, 1)
     >>> model.output_channels
@@ -1246,7 +1197,8 @@ class FullyConvolutionalNetwork(BaseModel):
             _activations = [None] * len(activations)
             for i in range(len(activations)):
                 if isinstance(activations[i], str) or activations[i] is None:
-                    _activations[i] = self._with_device(Activation, activations[i])
+                    _activations[i] = self._with_device(Activation,
+                                                        activations[i])
                 else:
                     _activations[i] = activations[i]
 
@@ -1559,18 +1511,21 @@ class UNet(BaseModel):
         if isinstance(filter_sizes, int):
             self.filter_sizes = (filter_sizes,) * len(self.num_conv_layers)
         elif len(filter_sizes) != len(self.num_conv_layers):
-                raise ValueError("``filter_sizes`` should have the same "
-                                 "length as ``num_conv_layers``.")
+            raise ValueError("``filter_sizes`` should have the same "
+                             "length as ``num_conv_layers``.")
         else:
             self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
         self._activations_orig = activations
-        self.activations_enc = utils.deserialize_activations(activations,
-                                                             length=len(self.num_conv_layers),
-                                                             device=self.device)
-        self.activations_dec = utils.deserialize_activations(activations,
-                                                             length=len(self.num_conv_layers),
-                                                             device=self.device)
+        self.activations_enc = utils.deserialize_activations(
+                activations,
+                length=len(self.num_conv_layers),
+                device=self.device)
+        self.activations_dec = utils.deserialize_activations(
+                activations,
+                length=len(self.num_conv_layers),
+                device=self.device)
+
 #        if isinstance(activations, six.string_types):
 #            activations_enc = [self._with_device(Activation,
 #                                                 activations)
@@ -1584,8 +1539,8 @@ class UNet(BaseModel):
 #
 #        elif isinstance(activations, (list, tuple)):
 #            if len(activations) != len(num_conv_layers):
-#                raise ValueError("``activations`` should have the same length "
-#                                 "as ``num_conv_layers``.")
+#                raise ValueError("``activations`` should have the same "
+#                                 "length as ``num_conv_layers``.")
 #
 #            activations_enc = [None] * len(activations)
 #            for i in range(len(activations)):
@@ -1621,15 +1576,15 @@ class UNet(BaseModel):
                                                   output_activation)
         self.output_activation = output_activation
 
-        if use_downconvolution == False \
-                and use_strided_convolution == False \
-                and use_maxpooling == False:
+        if not use_downconvolution \
+                and not use_strided_convolution \
+                and not use_maxpooling:
             raise ValueError("One of ``use_downconvolution``, "
                              "``use_strided_convolution``, "
                              "``use_maxpooling`` must be ``True``.")
-        if use_upconvolution == False \
-                and use_strided_deconvolution == False \
-                and use_maxunpooling == False:
+        if not use_upconvolution \
+                and not use_strided_deconvolution \
+                and not use_maxunpooling:
             raise ValueError("One of ``use_upconvolution``, "
                              "``use_strided_deconvolution``, "
                              "``use_maxunpooling`` must be ``True``.")
@@ -1652,10 +1607,10 @@ class UNet(BaseModel):
                                                   device=self.device)
 
         self.dense_dropout = max(0.0, min(float(dense_dropout), 1.0))
-        self.kernel_initializer = keras.initializers.get(kernel_initializer)
-        self.bias_initializer = keras.initializers.get(bias_initializer)
-        self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
-        self.bias_regularizer = keras.regularizers.get(bias_regularizer)
+        self.kernel_initializer = tf_keras.initializers.get(kernel_initializer)
+        self.bias_initializer = tf_keras.initializers.get(bias_initializer)
+        self.kernel_regularizer = tf_keras.regularizers.get(kernel_regularizer)
+        self.bias_regularizer = tf_keras.regularizers.get(bias_regularizer)
 
         if self.data_format == "channels_last":
             self._axis = 3
@@ -1701,9 +1656,10 @@ class UNet(BaseModel):
         # here:
         #     https://github.com/fchollet/keras/issues/6021
         #     https://github.com/fchollet/keras/issues/5442
-        # raise NotImplementedError("The save method currencly does not work in "
-        #                           "Keras when there are skip connections. Use "
-        #                           "``save_weights`` instead.")
+        # raise NotImplementedError("The save method currencly does not work "
+        #                           "in Keras when there are skip "
+        #                           "connections. Use ``save_weights`` "
+        #                           "instead.")
 
         self.model.save(filepath, overwrite=overwrite,
                         include_optimizer=include_optimizer)
@@ -1829,14 +1785,17 @@ class UNet(BaseModel):
 #                    if isinstance(obj, list):
 #                        deserialized = []
 #                        for value in obj:
-#                            deserialized.append(convert_custom_objects(value,
-#                                                                       custom_objects=custom_objects))
+#                            deserialized.append(
+#                                convert_custom_objects(
+#                                    value,
+#                                    custom_objects=custom_objects))
 #                        return deserialized
 #                    if isinstance(obj, dict):
 #                        deserialized = {}
 #                        for key, value in obj.items():
-#                            deserialized[key] = convert_custom_objects(value,
-#                                                                       custom_objects=custom_objects)
+#                            deserialized[key] = convert_custom_objects(
+#                                value,
+#                                custom_objects=custom_objects)
 #                        return deserialized
 #                    if obj in custom_objects:
 #                        return custom_objects[obj]
@@ -1847,21 +1806,25 @@ class UNet(BaseModel):
 #                    training_config = f.attrs.get('training_config')
 #
 #                    if training_config is None:
-#                        warnings.warn("No training configuration found in save file: "
-#                                      "the model was *not* compiled. Compile it "
-#                                      "manually.")
+#                        warnings.warn("No training configuration found in "
+#                                      "save file: the model was *not* "
+#                                      "compiled. Compile it manually.")
 #                        return unet
 #
-#                    training_config = json.loads(training_config.decode("utf-8"))
+#                    training_config = json.loads(training_config.decode(
+#                            "utf-8"))
 #                    optimizer_config = training_config["optimizer_config"]
-#                    optimizer = keras.optimizers.deserialize(optimizer_config,
-#                                                             custom_objects=custom_objects or {})
+#                    optimizer = keras.optimizers.deserialize(
+#                            optimizer_config,
+#                            custom_objects=custom_objects or {})
 #
 #                    # Recover loss functions and metrics.
-#                    loss = convert_custom_objects(training_config["loss"],
-#                                                  custom_objects=custom_objects or {})
-#                    metrics = convert_custom_objects(training_config["metrics"],
-#                                                     custom_objects=custom_objects or {})
+#                    loss = convert_custom_objects(
+#                            training_config["loss"],
+#                            custom_objects=custom_objects or {})
+#                    metrics = convert_custom_objects(
+#                            training_config["metrics"],
+#                            custom_objects=custom_objects or {})
 #                    sample_weight_mode = training_config["sample_weight_mode"]
 #                    loss_weights = training_config["loss_weights"]
 #
@@ -1879,15 +1842,15 @@ class UNet(BaseModel):
 #                        optimizer_weights_group = f["optimizer_weights"]
 #                        optimizer_weight_names = [n.decode("utf8") for n in
 #                                                  optimizer_weights_group.attrs["weight_names"]]
-#                        optimizer_weight_values = [optimizer_weights_group[n] for n in
-#                                                   optimizer_weight_names]
+#                        optimizer_weight_values = [optimizer_weights_group[n]
+#                                for n in optimizer_weight_names]
 #                        try:
 #                            model.optimizer.set_weights(optimizer_weight_values)
 #                        except ValueError:
-#                            warnings.warn("Error in loading the saved optimizer "
-#                                          "state. As a result, your model is "
-#                                          "starting with a freshly initialized "
-#                                          "optimizer.")
+#                            warnings.warn("Error in loading the saved "
+#                                          "optimizer state. As a result, "
+#                                          "your model is starting with a "
+#                                          "freshly initialized optimizer.")
 #        else:
         model = with_device(device,
                             load_model,
@@ -1949,8 +1912,10 @@ class UNet(BaseModel):
         config["num_conv_layers"] = self.num_conv_layers
         config["num_filters"] = self.num_filters
         config["filter_sizes"] = self.filter_sizes
-        config["activations"] = utils.serialize_activations(self._activations_orig)
-        config["output_activation"] = utils.serialize_activations(self._output_activations_orig)
+        config["activations"] = utils.serialize_activations(
+                self._activations_orig)
+        config["output_activation"] = utils.serialize_activations(
+                self._output_activations_orig)
         config["use_downconvolution"] = self.use_downconvolution
         config["use_upconvolution"] = self.use_upconvolution
         config["use_strided_convolution"] = self.use_strided_convolution
@@ -1960,10 +1925,14 @@ class UNet(BaseModel):
         config["use_maxunpooling_mask"] = self.use_maxunpooling_mask
         config["use_deconvolutions"] = self.use_deconvolutions
         config["use_batch_normalization"] = self.use_batch_normalization
-        config["kernel_initializer"] = keras.initializers.serialize(self.kernel_initializer)
-        config["bias_initializer"] = keras.initializers.serialize(self.bias_initializer)
-        config["kernel_regularizer"] = keras.initializers.serialize(self.kernel_regularizer)
-        config["bias_regularizer"] = keras.initializers.serialize(self.bias_regularizer)
+        config["kernel_initializer"] = tf_keras.initializers.serialize(
+                self.kernel_initializer)
+        config["bias_initializer"] = tf_keras.initializers.serialize(
+                self.bias_initializer)
+        config["kernel_regularizer"] = tf_keras.initializers.serialize(
+                self.kernel_regularizer)
+        config["bias_regularizer"] = tf_keras.initializers.serialize(
+                self.bias_regularizer)
 
         return config
 
@@ -2039,7 +2008,7 @@ class UNet(BaseModel):
             warnings.warn("The number of provided parameters does not match "
                           "the output of ``model.get_weights()``.")
 
-        K.batch_set_value(weight_values)
+        tf_keras.backend.batch_set_value(weight_values)
 
     def _generate_model(self):
 
@@ -2211,7 +2180,8 @@ class UNet(BaseModel):
             if self.use_upconvolution:
                 x = layers.Resampling2D((2, 2),
                                         data_format=self.data_format)(x)
-                # x = UpSampling2D(size=(2, 2), data_format=self.data_format)(x)
+                # x = UpSampling2D(size=(2, 2),
+                #                  data_format=self.data_format)(x)
 
                 x = Convolution2D(num_filters_i,
                                   (2, 2),  # Filter size of up-convolution
@@ -2257,7 +2227,8 @@ class UNet(BaseModel):
 
                     x = [x, mask]
 
-                # unpool_name = "maxunpool_%d" % (len(self.num_conv_layers) - i,)
+                # unpool_name = "maxunpool_%d" \
+                #         % (len(self.num_conv_layers) - i,)
                 # unpool_name = unpool_name + "_" + str(K.get_uid(unpool_name))
                 x = layers.MaxUnpooling2D(pool_size=(2, 2),
                                           strides=(2, 2),  # Not used
@@ -2272,7 +2243,8 @@ class UNet(BaseModel):
 
             skip_connection = skip_connections[-(i - 1)]
 
-            x = Concatenate(axis=self._axis)([x, skip_connection])
+            x = tf_keras.layers.Concatenate(axis=self._axis)([x,
+                                                              skip_connection])
 
             for j in range(num_conv_layers_i):
                 if self.use_deconvolutions:
@@ -2568,19 +2540,20 @@ class DenseNet(BaseModel):
     >>> X = np.random.randn(*input_shape)
     >>> X = X[np.newaxis, ...]
     >>>
-    >>> model = nethin.models.ConvolutionalNetwork(input_shape=input_shape,
-    ...                                            num_filters=num_filters,
-    ...                                            filter_sizes=filter_sizes,
-    ...                                            subsample=subsample,
-    ...                                            activations=activations,
-    ...                                            dense_sizes=dense_sizes,
-    ...                                            dense_activations=dense_activations,
-    ...                                            use_batch_normalization=use_batch_normalization,
-    ...                                            use_dropout=use_dropout,
-    ...                                            dropout_rate=dropout_rate,
-    ...                                            use_maxpool=use_maxpool,
-    ...                                            data_format=data_format,
-    ...                                            device=device)
+    >>> model = nethin.models.ConvolutionalNetwork(
+    ...         input_shape=input_shape,
+    ...         num_filters=num_filters,
+    ...         filter_sizes=filter_sizes,
+    ...         subsample=subsample,
+    ...         activations=activations,
+    ...         dense_sizes=dense_sizes,
+    ...         dense_activations=dense_activations,
+    ...         use_batch_normalization=use_batch_normalization,
+    ...         use_dropout=use_dropout,
+    ...         dropout_rate=dropout_rate,
+    ...         use_maxpool=use_maxpool,
+    ...         data_format=data_format,
+    ...         device=device)
     >>> model.input_shape
     (128, 128, 1)
     >>> X.shape
@@ -2657,9 +2630,9 @@ class DenseNet(BaseModel):
         self.init_filter_size = max(1, int(init_filter_size))
         self.init_stride = max(1, int(init_stride))
         self.init_kernel_initializer \
-            = keras.initializers.get(init_kernel_initializer)
+            = tf_keras.initializers.get(init_kernel_initializer)
         self.init_bias_initializer \
-            = keras.initializers.get(init_bias_initializer)
+            = tf_keras.initializers.get(init_bias_initializer)
         self.init_batch_normalization = bool(init_batch_normalization)
 
         self._init_activation_orig = init_activation
@@ -2685,9 +2658,9 @@ class DenseNet(BaseModel):
 
         self.dense_filter_size = max(1, int(dense_filter_size))
         self.dense_kernel_initializer \
-            = keras.initializers.get(dense_kernel_initializer)
+            = tf_keras.initializers.get(dense_kernel_initializer)
         self.dense_bias_initializer \
-            = keras.initializers.get(dense_bias_initializer)
+            = tf_keras.initializers.get(dense_bias_initializer)
         self.dense_dropout_rate = max(0.0,
                                       min(float(dense_spatialdropout_rate),
                                           1.0))
@@ -2726,9 +2699,8 @@ class DenseNet(BaseModel):
 
         self.final_dense_layer = bool(final_dense_layer)
         self.final_dense_dim = max(1, int(final_dense_dim))
-        self.final_dense_dropout_rate = max(0.0,
-                                           min(float(final_dense_dropout_rate),
-                                               1.0))
+        self.final_dense_dropout_rate \
+            = max(0.0, min(float(final_dense_dropout_rate), 1.0))
 
         self._init_output_activation = output_activation
         self.output_activation = utils.deserialize_activations(
@@ -2766,7 +2738,7 @@ class DenseNet(BaseModel):
                                   use_bias=False)(x)
 
                 if self.dense_bottleneck_spatialdropout_rate > 0.0:
-                    x = SpatialDropout2D(
+                    x = tf_keras.layers.SpatialDropout2D(
                             self.dense_bottleneck_spatialdropout_rate,
                             data_format=self.data_format)(x)
                 elif self.dense_bottleneck_dropout_rate > 0.0:
@@ -2786,12 +2758,13 @@ class DenseNet(BaseModel):
                     bias_initializer=self.dense_bias_initializer)(x)
 
             if self.dense_spatialdropout_rate > 0.0:
-                x = SpatialDropout2D(self.dense_spatialdropout_rate,
-                                     data_format=self.data_format)(x)
+                x = tf_keras.layers.SpatialDropout2D(
+                        self.dense_spatialdropout_rate,
+                        data_format=self.data_format)(x)
             elif self.dense_dropout_rate > 0.0:
                 x = Dropout(self.dense_dropout_rate)(x)
 
-            x = Concatenate(axis=self._axis)([dense_link, x])
+            x = tf_keras.layers.Concatenate(axis=self._axis)([dense_link, x])
             filter_count += self.growth_rate
 
         return x, filter_count
@@ -2851,15 +2824,16 @@ class DenseNet(BaseModel):
                     use_bias=False)(x)
 
             if self.transition_spatialdropout_rate > 0.0:
-                x = SpatialDropout2D(self.transition_spatialdropout_rate,
-                                     data_format=self.data_format)(x)
+                x = tf_keras.layers.SpatialDropout2D(
+                        self.transition_spatialdropout_rate,
+                        data_format=self.data_format)(x)
             elif self.transition_dropout_rate > 0.0:
                 x = Dropout(self.transition_dropout_rate)(x)
 
-            x = AveragePooling2D((self.transition_pool_size,
-                                  self.transition_pool_size),
-                                 strides=(self.transition_pool_stride,
-                                          self.transition_pool_stride))(x)
+            x = tf_keras.layers.AveragePooling2D(
+                    (self.transition_pool_size, self.transition_pool_size),
+                    strides=(self.transition_pool_stride,
+                             self.transition_pool_stride))(x)
 
         # Final dense block
         x, filter_count = self._dense_block(x,
@@ -2873,11 +2847,12 @@ class DenseNet(BaseModel):
             x = self.final_activation(x)
 
         if self.final_global_pooling:
-            x = GlobalAveragePooling2D()(x)
+            x = tf_keras.layers.GlobalAveragePooling2D()(x)
         else:
-            x = AveragePooling2D((self.final_pool_size, self.final_pool_size),
-                                 strides=(self.final_pool_stride,
-                                          self.final_pool_stride))(x)
+            x = tf_keras.layers.AveragePooling2D(
+                    (self.final_pool_size, self.final_pool_size),
+                    strides=(self.final_pool_stride,
+                             self.final_pool_stride))(x)
         x = Flatten()(x)
 
         # Dense layer
@@ -2969,9 +2944,10 @@ class GAN(BaseModel):
     >>> import nethin.models as models
     >>> import nethin.utils as utils
     >>> from keras.models import Sequential
-    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D, Convolution2DTranspose
+    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D,
+    >>> from keras.layers.convolutional import Convolution2DTranspose
     >>> from keras.layers.advanced_activations import LeakyReLU
-    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape  # Input, Flatten, Lambda
+    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape
     >>> from keras.layers.normalization import BatchNormalization
     >>> from keras.optimizers import RMSprop, Adam
     >>> from keras.datasets import mnist
@@ -3043,11 +3019,14 @@ class GAN(BaseModel):
     >>> loss_a = []
     >>> loss_d = []
     >>> # for it in range(5000):
-    >>> im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> im_real = x_train[np.random.randint(0,
+    ...                                     x_train.shape[0],
+    ...                                     size=batch_size), :, :, :]
     >>> loss = gan.train_on_batch(im_real)
     >>> loss_d.append(loss[0][1])
     >>> loss_a.append(loss[1][1])
-    >>> # print("it: %d, loss d: %f, loss a: %f" % (it, loss[0][1], loss[1][1]))
+    >>> # print("it: %d, loss d: %f, loss a: %f" \
+    ... #     % (it, loss[0][1], loss[1][1]))
     >>> # Loss D (CE, acc)
     >>> np.round(loss[0], 2)  # doctest: +NORMALIZE_WHITESPACE
     array([3.42, 0.34])
@@ -3067,7 +3046,9 @@ class GAN(BaseModel):
     >>> #             metrics=["accuracy"])
     >>> # acc = []
     >>> # for it in range(10000):  # equals 5000 iterations
-    >>> #     im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> #     im_real = x_train[np.random.randint(0,
+    ... #                                         x_train.shape[0],
+    ... #                                         size=batch_size), :, :, :]
     >>> #     loss = gan.train_on_batch(im_real)
     >>> #     acc.append(loss[0][1])
     >>> #     print("it: %d, iterations: %d, acc: %s, all: %s"
@@ -3468,10 +3449,11 @@ class WassersteinGAN(BaseModel):
     >>> import nethin.constraints as constraints
     >>> import nethin.utils as utils
     >>> from keras.models import Model
-    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D, Convolution2DTranspose
+    >>> from keras.layers.convolutional import Convolution2D, UpSampling2D
+    >>> from keras.layers.convolutional import Convolution2DTranspose
     >>> from keras.layers import Input
     >>> from keras.layers.advanced_activations import LeakyReLU
-    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape  # Input, Flatten, Lambda
+    >>> from keras.layers import Flatten, Dense, Dropout, Activation, Reshape
     >>> from keras.layers.normalization import BatchNormalization
     >>> from keras.optimizers import RMSprop  # Optimizer
     >>> from keras.datasets import mnist
@@ -3558,7 +3540,9 @@ class WassersteinGAN(BaseModel):
     >>> wgan.compile(optimizer=RMSprop(lr=learning_rate))
     >>> loss_d = []
     >>> # for it in range(5000):
-    >>> im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> im_real = x_train[np.random.randint(0,
+    ...                                     x_train.shape[0],
+    ...                                     size=batch_size), :, :, :]
     >>> loss = wgan.train_on_batch(im_real)
     >>> loss_d.append(loss[0])
     >>> # print("it: %d, loss d: %f, all: %s" % (it, loss[0], str(loss)))
@@ -3578,7 +3562,9 @@ class WassersteinGAN(BaseModel):
     >>> # wgan.compile(optimizer=RMSprop(lr=learning_rate))
     >>> # loss_d = []
     >>> # for it in range(10000):  # equals 2000 iterations
-    >>> #     im_real = x_train[np.random.randint(0, x_train.shape[0], size=batch_size), :, :, :]
+    >>> #     im_real = x_train[np.random.randint(0,
+    ... #                                         x_train.shape[0],
+    ... #                                         size=batch_size), :, :, :]
     >>> #     loss = wgan.train_on_batch(im_real)
     >>> #     if loss[-1] is not None:
     >>> #         loss_d.append(loss[0])
@@ -3784,7 +3770,7 @@ class WassersteinGAN(BaseModel):
             metrics = [metrics, metrics]
 
         def wasserstein_distance(y_true, y_pred):
-            return K.mean(y_true * y_pred)
+            return tf_keras.backend.mean(y_true * y_pred)
 
         model_G, model_D, model_GAN = self._model
 

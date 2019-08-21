@@ -24,7 +24,6 @@ import builtins
 import importlib
 
 import numpy as np
-import scipy.interpolate as interpolate
 
 try:
     from pympler.asizeof import asizeof as _sizeof
@@ -35,6 +34,20 @@ except (ImportError):
         _HAS_SIZEOF = True
     except (ImportError):
         _HAS_SIZEOF = False
+
+
+__all__ = ["Helper", "get_device_string", "with_device",  # "LazyImport",
+           "serialize_activations", "deserialize_activations",
+           "serialize_array", "deserialize_array",
+           # "to_snake_case",
+           "get_json_type",
+           "normalize_object", "normalize_list", "normalize_str",
+           "normalize_random_state", "normalize_callables",
+           "apply_callables",
+           "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
+           "vector_median", "smooth_moving_average", "sizeof", "random_string",
+           "is_npz_file", "is_image_file",
+           "ExceedingThresholdException"]
 
 
 class LazyImport(types.ModuleType):
@@ -91,38 +104,6 @@ class LazyImport(types.ModuleType):
         else:
             return repr(module)
 
-
-import tensorflow as tf
-# tf = LazyImport("tensorflow")  # import tensorflow as tf
-import keras.backend as K
-# K = LazyImport("keras.backend")  # import keras.backend as K
-import keras.engine as keras_engine
-# keras_engine = LazyImport("keras.engine")  # import keras.engine
-
-# try:
-#     from keras.engine.topology import _to_snake_case as to_snake_case
-# except ImportError:
-#     from keras.engine.base_layer import _to_snake_case as to_snake_case
-
-import keras.activations as keras_activations
-# keras_activations = LazyImport("keras.activations")
-import keras.layers.advanced_activations as keras_advanced_activations
-# keras_advanced_activations = LazyImport("keras.layers.advanced_activations")
-import keras.layers as keras_layers
-# keras_layers = LazyImport("keras.layers")
-
-__all__ = [# "LazyImport",
-           "Helper", "get_device_string", "with_device",
-           "serialize_activations", "deserialize_activations",
-           "serialize_array", "deserialize_array",
-           # "to_snake_case",
-           "get_json_type",
-           "normalize_object", "normalize_list", "normalize_str",
-           "normalize_random_state", "normalize_callables",
-           "apply_callables",
-           "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
-           "vector_median", "sizeof", "random_string", "is_npz_file",
-           "ExceedingThresholdException"]
 
 # TODO: Make a helper module for each backend instead, as in Keras.
 # TODO: Check for supported backends.
@@ -199,6 +180,9 @@ class TensorflowHelper(object):
         # TODO: We should check the validity of the device_type argument, but
         # don't know the possible device types here. Find out what they can be!
 
+        import tensorflow as tf
+        from tensorflow.python import keras as tf_keras
+
         if device_type is not None:
             device_type = str(device_type).upper()
 
@@ -247,7 +231,7 @@ class TensorflowHelper(object):
                     # # else:
                     # #     with tf.Session(graph=self.get_graph()) as sess:
                     # #         sess.run(c)  # Try to use the device
-                    with K.get_session() as sess:
+                    with tf_keras.backend.get_session() as sess:
                         sess.run(c)  # Try to use the device
 
                     local_devices.append(device_name)
@@ -278,7 +262,7 @@ class TensorflowHelper(object):
                     # # else:
                     # #     with tf.Session(graph=self.get_graph()) as sess:
                     # #         sess.run(c)  # Try to use the device
-                    with K.get_session() as sess:
+                    with tf_keras.backend.get_session() as sess:
                         sess.run(c)  # Try to use the device
 
                     local_devices.append(device_name)
@@ -332,6 +316,8 @@ def with_device(__device, function, *args, **kwargs):
     kwargs : list, optional
         The list of keyword arguments to ``function``.
     """
+    import tensorflow as tf
+
     if __device is None:
         ret = function(*args, **kwargs)
     else:
@@ -347,17 +333,21 @@ def serialize_activations(activations):
         return activations
 
     def serialize_one(activation):
+
+        from tensorflow.python import keras as tf_keras
+        from tensorflow.python.keras.engine.base_layer import Layer \
+            as BaseLayer
+
         if isinstance(activation, six.string_types):
             return activation
 
-        if isinstance(activation, keras_engine.Layer):  # Advanced activation
-            from keras.utils.generic_utils import serialize_keras_object
-            return serialize_keras_object(activation)
+        if isinstance(activation, BaseLayer):  # Advanced activation
+            return tf_keras.utils.generic_utils.serialize_keras_object(
+                    activation)
 
         # The order matters here, since Layers are also callable.
         if callable(activation):  # A function
-            from keras.utils.generic_utils import func_dump
-            return func_dump(activation)
+            return tf_keras.utils.generic_utils.func_dump(activation)
 
         # Keras serialized config
         if isinstance(activation, dict) \
@@ -370,9 +360,9 @@ def serialize_activations(activations):
                 and len(activation) == 3 \
                 and isinstance(activation[0], six.string_types):
             try:
-                from keras.utils.generic_utils import func_load
-                # TODO: Better way to check if it is a marshalled function!
-                func_load(activation)  # Try to unmarshal it
+                # TODO: Better way to check if it is a marshalled function?
+                # Try to unmarshal it
+                tf_keras.utils.generic_utils.func_load(activation)
 
                 return activation
 
@@ -428,12 +418,14 @@ def deserialize_activations(activations, length=None, device=None):
 
     def deserialize_one(activation):
 
+        from tensorflow.python import keras as tf_keras
+
         # Simple activation
         if (activation is None) or isinstance(activation, six.string_types):
-            return with_device(device, keras_layers.Activation, activation)
+            return with_device(device, tf_keras.layers.Activation, activation)
 
         # Advanced activation (it has already been created, nothing we can do)
-        if isinstance(activation, keras_engine.Layer):
+        if isinstance(activation, tf_keras.engine.Layer):
             return activation
 
         # Function (it has already been created, nothing we can do)
@@ -446,17 +438,19 @@ def deserialize_activations(activations, length=None, device=None):
                 and "config" in activation:
 
             # Make advanced activation functions available per default
-            if activation["class_name"] in dir(keras_advanced_activations):
+            if activation["class_name"] in \
+                    dir(tf_keras.layers.advanced_activations):
                 custom_objects = {}
                 class_name = activation["class_name"]
-                for attr in dir(keras_advanced_activations):
+                for attr in dir(tf_keras.layers.advanced_activations):
                     if class_name == attr:
-                        layer = keras_advanced_activations.__dict__[class_name]
+                        layer = tf_keras.layers.advanced_activations.__dict__[
+                                class_name]
                         custom_objects[class_name] = layer
                         break
 
             return with_device(device,
-                               keras_activations.deserialize,
+                               tf_keras.activations.deserialize,
                                activation,
                                custom_objects=custom_objects)
 
@@ -465,10 +459,9 @@ def deserialize_activations(activations, length=None, device=None):
                 and len(activation) == 3 \
                 and isinstance(activation[0], six.string_types):
             try:
-                from keras.utils.generic_utils import func_load
-
                 # TODO: Better way to check if it is a marshalled function!
-                return func_load(activation)  # Try to unmarshal it
+                # Try to unmarshal it
+                return tf_keras.utils.generic_utils.func_load(activation)
 
             except EOFError:
                 pass  # "marshal data too short" => Not a marshalled function
@@ -934,6 +927,8 @@ def simple_bezier(dist,
     assert(len(dist) == len(controls))
 
     if interp is None:
+        import scipy.interpolate as interpolate
+
         interp = interpolate.PchipInterpolator
 
         if interp_kwargs is None:
@@ -1451,6 +1446,21 @@ def vector_median(vf, window=1, order=2):
     return new_vf
 
 
+def smooth_moving_average(x, window=5):
+
+    x = np.asarray(x)
+    if x.ndim > 1:
+        raise ValueError("The input signal must be one-dimensional.")
+    window = max(1, int(window))
+
+    mean_x = np.zeros_like(x)
+    for i in range(x.size):
+        vals = x[max(0, i - window):min(i + window + 1, len(x))]
+        mean_x[i] = np.mean(vals)
+
+    return mean_x
+
+
 def sizeof(o, use_external=True):
     r"""Attempts to determine the size in bytes of the provided object.
 
@@ -1467,8 +1477,9 @@ def sizeof(o, use_external=True):
     use_external : bool, optional
         Whether or not to use the external size checkers instead of the
         build-in one provided here. The external packages are either Pympler
-        (tested first), or objsize (tested second). Default is True, use the
-        external size packages.
+        (tested first), or objsize (tested second). Thus, set to false for
+        deterministic (but, perhaps less accurate) results between
+        installation. Default is True, use the external size packages.
 
     Examples
     --------
@@ -1547,6 +1558,54 @@ def is_npz_file(file):
             return False
     except Exception:
         return False
+
+
+def is_image_file(file, certain=True):
+    """Attempts to determine if a given file is an image file or not.
+
+    Uses imghdr to see if it is one of the most common image types, if not, if
+    ``certain=True`` it will attempt to open the file using the Python image
+    library (PIL) and if ``certain=False`` it will return False directly.
+    Otherwise, if it is one of the common image types (imghdr returns not
+    None), if ``certain=True`` it will attempt to open the file using PIL, and
+    otherwise it will return True directly.
+
+    Parameters
+    ----------
+    file : str or path-like objects
+        The file to test for being an image or not.
+
+    certain : bool, optional
+        Whether or not to attempt to actually read the file. False is faster,
+        but may be less accurate (it may even crash later if the file couldn't
+        be opened later on).
+    """
+    from PIL import Image
+    import imghdr
+    if imghdr.what(file) is None:
+        if not certain:
+            return False
+        else:
+            try:
+                with Image.open(file) as im:
+                    try:
+                        im.verify()
+                        return True
+                    except Exception:
+                        return False
+            except Exception:
+                return False
+    else:
+        # return True
+        if not certain:
+            return True
+        else:
+            with Image.open(file) as im:
+                try:
+                    im.verify()
+                    return True
+                except Exception:
+                    return False
 
 
 class ExceedingThresholdException(Exception):

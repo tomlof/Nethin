@@ -4,14 +4,12 @@ This module contains custom loss functions.
 
 Created on Mon Nov  6 13:50:57 2017
 
-Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-import keras.backend as K
-
 __all__ = ["BaseLoss",
            "GradientDifferenceLoss"]
 
@@ -31,7 +29,8 @@ class GradientDifferenceLoss(BaseLoss):
 
     def __init__(self, input_shape):
 
-        super(GradientDifferenceLoss, self).__init__("gradient_difference_loss")
+        super(GradientDifferenceLoss, self).__init__(
+                "gradient_difference_loss")
 
         self.input_shape = tuple(input_shape)
 
@@ -54,12 +53,15 @@ class GradientDifferenceLoss(BaseLoss):
             dif22 = y_pred[:, :, 1:, :, :] - y_pred[:, :, :-1, :, :]
             dif23 = y_pred[:, :, :, 1:, :] - y_pred[:, :, :, :-1, :]
 
+        import tensorflow.keras.backend as K
+
         dif1 = K.sqrt(K.sum(K.square(dif11))) - K.sqrt(K.sum(K.square(dif21)))
         gdl = K.square(dif1)
         dif2 = K.sqrt(K.sum(K.square(dif12))) - K.sqrt(K.sum(K.square(dif22)))
         gdl = gdl + K.square(dif2)
         if dif13 is not None:
-            dif3 = K.sqrt(K.sum(K.square(dif13))) - K.sqrt(K.sum(K.square(dif23)))
+            dif3 = K.sqrt(K.sum(K.square(dif13))) \
+                    - K.sqrt(K.sum(K.square(dif23)))
             gdl = gdl + K.square(dif3)
 
         return gdl

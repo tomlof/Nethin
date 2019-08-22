@@ -4,7 +4,7 @@ This module contains ready-to-use functions to view images and networks.
 
 Created on Fri Apr  6 15:55:02 2018
 
-Copyright (c) 2017-2018, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -15,11 +15,6 @@ import six
 import pickle
 
 import numpy as np
-
-import matplotlib.pyplot as plt
-
-import keras.backend as K
-
 
 __all__ = ["image_3d"]
 
@@ -64,13 +59,9 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
         in your Keras config file at ``~/.keras/keras.json``. If you never set
         it, then it will be "channels_last".
     """
-    if hasattr(K, "normalize_data_format"):
-        data_format = K.normalize_data_format(data_format)
-    else:
-        # TODO: Change since d40656e5799dfd22e96b8bab217638b2934a6894 (#10690).
-        #       Remove when appropriate ...
-        from keras.utils import conv_utils
-        data_format = conv_utils.normalize_data_format(data_format)
+    from tensorflow.python import keras as tf_keras
+
+    data_format = tf_keras.utils.conv_utils.normalize_data_format(data_format)
 
     if data_format == "channels_last":
         channel_axis = 3
@@ -94,9 +85,9 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
                         del images_
                         found = True
                         break
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
 
         if not found:
@@ -111,9 +102,9 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
                             del images_
                             found = True
                             break
-                    except:
+                    except Exception:
                         pass
-            except:
+            except Exception:
                 pass
 
         if not found:
@@ -178,6 +169,8 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
     # Format: Slice index, total number of frames, running
     handler_data = [0, images.shape[0], False]
 
+    import matplotlib.pyplot as plt
+
     fig, axs = plt.subplots(nrows=ny, ncols=nx, sharex=True, sharey=True)
     if (ny == 1) and (nx == 1):
         axs = np.asarray([axs])
@@ -224,7 +217,7 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
                 handler_data[2] = True
                 draw(handler_data[0])
                 handler_data[2] = False
-            except:
+            except Exception:
                 handler_data[2] = False
         elif event.button == "down":
             handler_data[0] = max(0, handler_data[0] - 1)
@@ -232,7 +225,7 @@ def image_3d(images, cmap=None, vmin=None, vmax=None, title=None,
                 handler_data[2] = True
                 draw(handler_data[0])
                 handler_data[2] = False
-            except:
+            except Exception:
                 handler_data[2] = False
         else:
             pass

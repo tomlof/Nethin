@@ -16,14 +16,9 @@ import inspect
 import numbers
 
 import numpy as np
-import scipy.optimize
-import scipy.stats as stats
-
-import nethin.utils as utils
-import nethin.consts as consts
 
 
-def import_skopt(message="This operation requires 'scikit-optimize'."):
+def _import_skopt(message="This operation requires 'scikit-optimize'."):
     try:
         import skopt
     except ModuleNotFoundError:
@@ -64,7 +59,9 @@ class DiscretePrior(BasePrior):
         sum_probs = sum(probabilities)
         self.probabilities = [p / sum_probs for p in probabilities]
 
-        self._rv_discrete = stats.rv_discrete(
+        import scipy.stats
+
+        self._rv_discrete = scipy.stats.rv_discrete(
                 values=(range(len(self.probabilities)), self.probabilities))
 
     def rvs(self, size=None, random_state=None):
@@ -79,7 +76,9 @@ class DiscretePrior(BasePrior):
             raise ValueError("Argument 'size' must be an int or a list/tuple "
                              "of int.")
 
-        random_state = utils.normalize_random_state(random_state)
+        import nethin.utils
+
+        random_state = nethin.utils.normalize_random_state(random_state)
 
         samples = self._rv_discrete.rvs(size=size,
                                         random_state=random_state)
@@ -122,12 +121,15 @@ class UniformPrior(BasePrior):
             raise ValueError("Argument 'size' must be an int or a list/tuple "
                              "of int.")
 
-        random_state = utils.normalize_random_state(random_state)
+        import nethin.utils
+        import scipy.stats
 
-        samples = stats.uniform.rvs(loc=0.0,
-                                    scale=1.0,
-                                    size=size,
-                                    random_state=random_state)
+        random_state = nethin.utils.normalize_random_state(random_state)
+
+        samples = scipy.stats.uniform.rvs(loc=0.0,
+                                          scale=1.0,
+                                          size=size,
+                                          random_state=random_state)
 
         return self.inverse_transform(samples)
 
@@ -152,7 +154,10 @@ class LogUniformPrior(BasePrior):
     # TODO: Handle closed, open, and half-open intervals.
 
     def __init__(self, low, high):
-        self.low = max(consts.MACHINE_EPSILON, min(float(low), float(high)))
+        import nethin.consts
+
+        self.low = max(nethin.consts.MACHINE_EPSILON,
+                       min(float(low), float(high)))
         self.high = max(float(low), float(high))
 
         self._log_low = np.log10(self.low)
@@ -170,12 +175,15 @@ class LogUniformPrior(BasePrior):
             raise ValueError("Argument 'size' must be an int or a list/tuple "
                              "of int.")
 
-        random_state = utils.normalize_random_state(random_state)
+        import nethin.utils
+        import scipy.stats
 
-        samples = stats.uniform.rvs(loc=0.0,
-                                    scale=1.0,
-                                    size=size,
-                                    random_state=random_state)
+        random_state = nethin.utils.normalize_random_state(random_state)
+
+        samples = scipy.stats.uniform.rvs(loc=0.0,
+                                          scale=1.0,
+                                          size=size,
+                                          random_state=random_state)
 
         return self.inverse_transform(samples)
 
@@ -288,7 +296,7 @@ class Boolean(Dimension):
 
     def _to_skopt(self):
 
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -335,7 +343,7 @@ class Real(Dimension):
         return value.astype(np.float)
 
     def _to_skopt(self):
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -389,7 +397,7 @@ class Integer(Dimension):
             return (value + 0.5).astype(np.int)
 
     def _to_skopt(self):
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -458,7 +466,7 @@ class Categorical(Dimension):
         return ret
 
     def _to_skopt(self):
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -525,7 +533,7 @@ class Constant(Dimension):
         return ret
 
     def _to_skopt(self):
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if self.size is not None:
             size = np.prod(self.size)
@@ -556,7 +564,9 @@ class Space(object):
 
     def rvs(self, size=None, random_state=None):
 
-        random_state = utils.normalize_random_state(random_state)
+        import nethin.utils
+
+        random_state = nethin.utils.normalize_random_state(random_state)
 
         dims = {}
         for dim_name in self.dimensions.keys():
@@ -577,7 +587,7 @@ class Space(object):
 
     def _to_skopt(self):
 
-        import_skopt("This operation requires 'scikit-optimize'.")
+        _import_skopt("This operation requires 'scikit-optimize'.")
 
         dims = []
         for dim in self.dimensions.values():
@@ -728,7 +738,7 @@ class GaussianProcessRegression(BaseMinimizer):
                  result=None,
                  random_state=None):
 
-        skopt = import_skopt("This operation requires 'scikit-optimize'.")
+        skopt = _import_skopt("This operation requires 'scikit-optimize'.")
 
         if not isinstance(space, Space):
             raise ValueError("The 'space' must be of type 'Space'.")
@@ -738,7 +748,10 @@ class GaussianProcessRegression(BaseMinimizer):
         if noise is None:
             self.noise = None
         else:
-            self.noise = max(np.sqrt(consts.MACHINE_EPSILON), float(noise))
+            import nethin.consts
+
+            self.noise = max(np.sqrt(nethin.consts.MACHINE_EPSILON),
+                             float(noise))
 
         if not isinstance(acquisition_function, BaseAcquisitionFunction):
             raise ValueError("The 'acquisition_function' must be of type "
@@ -752,6 +765,8 @@ class GaussianProcessRegression(BaseMinimizer):
 
         self.acquisition_optimizer = \
             acquisition_function.optimizer._to_skopt()
+
+        import scipy.optimize
 
         if result is None:
             self.result = None
@@ -767,7 +782,9 @@ class GaussianProcessRegression(BaseMinimizer):
                              "or a tuple of two numpy arrays or lists of "
                              "lists.")
 
-        self.random_state = utils.normalize_random_state(random_state)
+        import nethin.utils
+
+        self.random_state = nethin.utils.normalize_random_state(random_state)
 
         self.base_estimator_ = None
         self.optimizer_ = None
@@ -920,7 +937,9 @@ class HyperParameterOptimization(object):
                              "'BaseMinimizer'.")
         self.minimizer = minimizer
 
-        self.callbacks = utils.normalize_callables(callback)
+        import nethin.utils
+
+        self.callbacks = nethin.utils.normalize_callables(callback)
 
     def step(self, f):
 
@@ -938,11 +957,13 @@ class HyperParameterOptimization(object):
 
         num_iter = max(1, int(num_iter))
 
+        import nethin.utils
+
         for i in range(num_iter):
 
             result = self.step(f)
 
-            if utils.apply_callables(self.callbacks, result):
+            if nethin.utils.apply_callables(self.callbacks, result):
                 break
 
         return result

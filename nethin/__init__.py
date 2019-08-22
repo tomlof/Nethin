@@ -16,12 +16,16 @@ from nethin import data  # tf.keras only
 from nethin import hyper  # no keras
 
 from nethin import constraints  # tf.keras only
-from nethin import layers  # tf.keras only
-from nethin import models  # tf.keras only, but needs restructuring!
-from nethin import normalization  # tf.keras only
-from nethin import padding  # tf.keras only
+from nethin import penalties  # tf.keras only.
+
+# from nethin import layers  # tf.keras only. Imports tensorflow!
+# from nethin import models  # tf.keras only. Imports tensorflow!
+# from nethin import normalization  # tf.keras only. Imports tensorflow!
+# from nethin import padding  # tf.keras only. Imports tensorflow!
 
 from nethin import trainers  # tf.keras only
+
+from nethin import view  # no keras
 
 # from nethin import optimizers
 
@@ -31,9 +35,12 @@ __all__ = ["consts", "utils",
 
            "augmentation", "data", "hyper",
 
-           "constraints", "layers", "models", "normalization", "padding",
+           "constraints",  "penalties",
 
+           # "layers", "models", "normalization", "padding",
            # "optimizers",
 
-           "trainers"
+           "trainers",
+
+           "view",
            ]

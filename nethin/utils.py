@@ -4,7 +4,7 @@ Contains helper functions and utility functions for use in the library.
 
 Created on Mon Oct  9 14:05:26 2017
 
-Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se

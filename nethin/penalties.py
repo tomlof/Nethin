@@ -4,7 +4,7 @@ This module contains penalties for activations, weights and biases.
 
 Created on Mon Nov  6 13:43:46 2017
 
-Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -12,9 +12,6 @@ Copyright (c) 2017, Tommy Löfstedt. All rights reserved.
 """
 import abc
 from six import with_metaclass
-
-import keras.backend as K
-from keras.utils import conv_utils
 
 __all__ = ["BasePenalty", "TotalVariation2D"]
 
@@ -35,7 +32,10 @@ class BasePenalty(with_metaclass(abc.ABCMeta, object)):
     """
     def __init__(self, data_format=None):
 
-        self.data_format = conv_utils.normalize_data_format(data_format)
+        from tensorflow.python import keras as tf_keras
+
+        self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
+                data_format)
 
     def __call__(self, weights):
 
@@ -111,12 +111,14 @@ class TotalVariation2D(BasePenalty):
                 dif1 = dif1[:, :, :, :-1]
                 dif2 = dif2[:, :, :-1, :]
 
-            outputs = K.sum(K.sum(K.sum(K.sqrt(K.square(dif1) + K.square(dif2)),
-                                        axis=1),
-                                  axis=1),
-                            axis=1) \
-                    + K.sum(K.sum(K.sum(K.abs(edge1), axis=1), axis=1), axis=1) \
-                    + K.sum(K.sum(K.sum(K.abs(edge2), axis=1), axis=1), axis=1)
+            import tensorflow.keras.backend as K
+
+            outputs = \
+                K.sum(K.sum(K.sum(K.sqrt(
+                        K.square(dif1) + K.square(dif2)),
+                        axis=1), axis=1), axis=1) \
+                + K.sum(K.sum(K.sum(K.abs(edge1), axis=1), axis=1), axis=1) \
+                + K.sum(K.sum(K.sum(K.abs(edge2), axis=1), axis=1), axis=1)
             if self.mean:
                 outputs = K.mean(outputs)
             else:
@@ -130,6 +132,6 @@ class TotalVariation2D(BasePenalty):
 
     def get_config(self):
         base_config = super(TotalVariation2D, self).get_config()
-        config =  {"gamma": self.gamma,
-                   "mean": self.mean}
+        config = {"gamma": self.gamma,
+                  "mean": self.mean}
         return dict(list(base_config.items()) + list(config.items()))

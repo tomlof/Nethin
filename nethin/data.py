@@ -4,7 +4,7 @@ Contains means to read, generate and handle data.
 
 Created on Tue Oct  3 08:20:52 2017
 
-Copyright (c) 2017-2018, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -26,11 +26,7 @@ import collections
 
 import numpy as np
 from six import with_metaclass
-import imageio
 import PIL
-
-import nethin
-import nethin.utils as utils
 
 try:
     from collections import Generator
@@ -57,6 +53,17 @@ def _import_pandas(message="The Pandas package is required for this to work."):
         raise RuntimeError(message)
 
     return pandas
+
+
+# TODO: Do we need the imageio package? We can just use Pillow instead?
+def _import_imagio(message="The imageio package is required for this to "
+                           "work."):
+    try:
+        import imageio
+    except (ImportError, ModuleNotFoundError):
+        raise RuntimeError(message)
+
+    return imageio
 
 
 __all__ = ["DataLoader",
@@ -1476,7 +1483,9 @@ class DicomDataset(with_metaclass(abc.ABCMeta, BaseDataset)):
 
     def _put_cache(self, index, image):
 
-        this_size = utils.sizeof(image)
+        import nethin.utils
+
+        this_size = nethin.utils.sizeof(image)
         while self._cache_cur_size + this_size \
                 > self.cache_size * 2**30:
             index_drop = self._cache_order[0]
@@ -1901,7 +1910,9 @@ class Dicom3DDataset(DicomDataset):
                 image[channel_names[channel_i]] = channel_image
 
             if self.cache_size is not None:  # Use cache?
-                this_size = utils.sizeof(image)
+                import nethin.utils
+
+                this_size = nethin.utils.sizeof(image)
                 while self._cache_cur_size + this_size \
                         > self.cache_size * 2**30:
                     index_drop = self._cache_order[0]
@@ -2235,7 +2246,9 @@ class Dicom2DDataset(DicomDataset):
                 image[channel] = channel_image
 
             if self.cache_size is not None:  # Use cache?
-                this_size = utils.sizeof(image)
+                import nethin.utils
+
+                this_size = nethin.utils.sizeof(image)
                 while self._cache_cur_size + this_size \
                         > self.cache_size * 2**30:
                     index_drop = self._cache_order[0]
@@ -2366,6 +2379,8 @@ class NumpyDataset(with_metaclass(abc.ABCMeta, DicomDataset)):
 
         if self.order_slices:
             files = list(sorted(files))
+
+        import nethin.utils
 
         for file_i in range(len(files)):
             file = files[file_i]
@@ -2967,6 +2982,8 @@ class ImageDataset(with_metaclass(abc.ABCMeta, DicomDataset)):
         if self.order_slices:
             all_files = list(sorted(all_files))
 
+        import nethin.utils
+
         # file_i = 0
         for file_i in range(len(all_files)):
             file = all_files[file_i]
@@ -3009,6 +3026,9 @@ class ImageDataset(with_metaclass(abc.ABCMeta, DicomDataset)):
         return files
 
     def _read_image(self, file):  # files
+
+        imageio = _import_imagio(message="ImageDataset requires the imageio "
+                                         "package.")
 
         image = np.asarray(imageio.imread(file))
 
@@ -3348,6 +3368,8 @@ class Dicom3DWriter(object):
             patient_name = "Doe^John"
         else:
             patient_name = "Doe^Jane"
+
+        import nethin
 
         uid = 0
         channel_id = 0
@@ -3784,6 +3806,9 @@ class ImageGenerator(BaseGenerator):
                 self.throw(e)
 
     def _read_image(self, file_name):
+
+        imageio = _import_imagio(message="ImageDataset requires the imageio "
+                                         "package.")
 
         try:
             image = np.asarray(imageio.imread(file_name))
@@ -5080,7 +5105,9 @@ class Numpy2DGenerator(BaseGenerator):
         self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
                 data_format)
 
-        self.random_state = utils.normalize_random_state(
+        import nethin.utils
+
+        self.random_state = nethin.utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
 
         self._all_files = self._list_dir()  # ["~usr/im1.npz", "~usr/im2.npz"]
@@ -5354,7 +5381,9 @@ class Numpy3DGenerator(BaseGenerator):
         self.data_format = tf_keras.utils.conv_utils.normalize_data_format(
                 data_format)
 
-        self.random_state = utils.normalize_random_state(
+        import nethin.utils
+
+        self.random_state = nethin.utils.normalize_random_state(
                 random_state, rand_functions=["rand", "randint", "choice"])
 
         self._all_files = self._list_dir()  # ["~usr/im1.npz", "~usr/im2.npz"]

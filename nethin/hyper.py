@@ -503,6 +503,7 @@ class Constant(Dimension):
                  value,
                  prior=None,
                  size=None,
+                 dtype=None,
                  **kwargs):
 
         if prior is None:
@@ -512,9 +513,13 @@ class Constant(Dimension):
                                        prior,
                                        size=size)
 
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, (bool, int, float)):
             raise ValueError("The value should be an int or a float.")
-        self.value = value
+        self.dtype = dtype
+        if self.dtype is None:
+            self.value = value
+        else:
+            self.value = self.dtype(value)
 
     def rvs(self, size=None, random_state=None):
 
@@ -725,7 +730,7 @@ class BaseMinimizer(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def step(self, f, space, random_state=None):
+    def step(self, f, **kwargs):
         pass
 
 
@@ -852,7 +857,7 @@ class GaussianProcessRegression(BaseMinimizer):
 
         return base_estimator
 
-    def step(self, f):
+    def step(self, f, **kwargs):
 
         specs = {"args": copy.copy(inspect.currentframe().f_locals),
                  "function": inspect.currentframe().f_code.co_name}
@@ -887,7 +892,7 @@ class GaussianProcessRegression(BaseMinimizer):
                     result.specs = specs
 
         next_x = self.optimizer_.ask()
-        next_y = f(self._space.unflatten(next_x))
+        next_y = f(self._space.unflatten(next_x), **kwargs)
         result = self.optimizer_.tell(next_x, next_y)
         result.specs = specs
 
@@ -941,12 +946,12 @@ class HyperParameterOptimization(object):
 
         self.callbacks = nethin.utils.normalize_callables(callback)
 
-    def step(self, f):
+    def step(self, f, **kwargs):
 
         if not callable(f):
             raise ValueError("The 'f' must be callable.")
 
-        result = self.minimizer.step(f)
+        result = self.minimizer.step(f, **kwargs)
 
         return result
 

@@ -773,16 +773,52 @@ class GaussianProcessRegression(BaseMinimizer):
 
         import scipy.optimize
 
+        result_done = False
         if result is None:
             self.result = None
+            result_done = True
         elif isinstance(result, scipy.optimize.optimize.OptimizeResult):
             self.result = result
+            result_done = True
         elif isinstance(result, (tuple, list)) \
                 and len(result) == 2 \
-                and isinstance(result[0], np.ndarray) \
+                and isinstance(result[0], (np.ndarray, list)) \
                 and isinstance(result[1], (np.ndarray, list)):
-            self.result = skopt.utils.create_result(result[0], result[1])
-        else:
+
+            result = [result[0], result[1]]
+
+            ok_0 = True
+            if isinstance(result[0], np.ndarray):
+                if len(result[0].shape) == 2:
+                    result[0] = result[0].tolist()
+                else:
+                    ok_0 = False
+            elif isinstance(result[0], list):
+                for val in result[0]:
+                    if not isinstance(val, list):
+                        ok_0 = False
+                        break
+
+            ok_1 = True
+            if isinstance(result[1], np.ndarray):
+                if result[1].ndim == 2:
+                    if result[1].shape[0] == 1 or result[1].shape[1] == 1:
+                        result[1] = result[1].ravel()
+                    else:
+                        ok_1 = False
+                elif result[1].ndim != 1:
+                    ok_1 = False
+            elif isinstance(result[1], list):
+                for val in result[1]:
+                    if isinstance(val, (list, tuple)):
+                        ok_1 = False
+                        break
+
+            if ok_0 and ok_1:
+                self.result = skopt.utils.create_result(result[0], result[1])
+                result_done = True
+
+        if not result_done:
             raise ValueError("The 'result' must either be an 'OptimizeResult' "
                              "or a tuple of two numpy arrays or lists of "
                              "lists.")

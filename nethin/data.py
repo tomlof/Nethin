@@ -3290,20 +3290,7 @@ class Dicom3DWriter(object):
               images,
               image_name,
               slice_name=None,
-              tags={
-                    # PixelSpacing [mm]
-                    pydicom.tag.Tag(0x0028, 0x0030): "1.0\\1.0",
-                    # SliceThickness [mm]
-                    pydicom.tag.Tag(0x0018, 0x0050): "3.0",
-                    # SpacingBetweenSlices [mm]
-                    pydicom.tag.Tag(0x0018, 0x0088): "3.0",
-                    # Modality (string)
-                    pydicom.tag.Tag(0x0008, 0x0060): "CT",
-                    # ImageOrientationPatient
-                    pydicom.tag.Tag(0x0020, 0x0037): "1\\0\\0\\0\\1\\0",
-                    # ImageOrientationPatient [mm]
-                    pydicom.tag.Tag(0x0020, 0x0032): "-200.0\\-240.0\\-100.0",
-                    }):
+              tags=None):
         """Performs the actual writing to Dicom files on disk.
 
         Parameters
@@ -3351,6 +3338,22 @@ class Dicom3DWriter(object):
                 raise ValueError("The 'slice_name' must contain an integer "
                                  "string formatter (i.e. '%d').")
 
+        if tags is None:
+            # Default DICOM tags
+            tags = {
+                    # PixelSpacing [mm]
+                    pydicom.tag.Tag(0x0028, 0x0030): "1.0\\1.0",
+                    # SliceThickness [mm]
+                    pydicom.tag.Tag(0x0018, 0x0050): "3.0",
+                    # SpacingBetweenSlices [mm]
+                    pydicom.tag.Tag(0x0018, 0x0088): "3.0",
+                    # Modality (string)
+                    pydicom.tag.Tag(0x0008, 0x0060): "CT",
+                    # ImageOrientationPatient
+                    pydicom.tag.Tag(0x0020, 0x0037): "1\\0\\0\\0\\1\\0",
+                    # ImageOrientationPatient [mm]
+                    pydicom.tag.Tag(0x0020, 0x0032): "-200.0\\-240.0\\-100.0",
+                    }
         if not isinstance(tags, dict):
             raise ValueError("The 'tags' must be a dict.")
         for tag in tags.keys():

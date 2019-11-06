@@ -969,7 +969,8 @@ class Convolution2DTranspose(tf_keras.layers.Convolution2DTranspose):
     def call(self, inputs, *args, **kwargs):
 
         outputs = super(Convolution2DTranspose, self).call(inputs,
-                                                           *args, **kwargs)
+                                                           *args,
+                                                           **kwargs)
 
         if not outputs.get_shape().is_fully_defined():
 
@@ -982,32 +983,52 @@ class Convolution2DTranspose(tf_keras.layers.Convolution2DTranspose):
             stride_h, stride_w = self.strides
             batch_size = inputs.get_shape()[0]
 
-            # Infer the dynamic output shape:
-            if LooseVersion(tf_keras.__version__) >= LooseVersion("2.2.1"):
-                # TODO: Better value for output_padding?
-                out_height = tf_keras.utils.conv_utils.deconv_length(
-                        height,
-                        stride_h,
-                        kernel_h,
-                        self.padding,
-                        None)  # output_padding
-                out_width = tf_keras.utils.conv_utils.deconv_length(
-                        width,
-                        stride_w,
-                        kernel_w,
-                        self.padding,
-                        None)  # output_padding
+            if self.output_padding is None:
+                out_pad_h = out_pad_w = None
             else:
-                out_height = tf_keras.utils.conv_utils.deconv_length(
-                        height,
-                        stride_h,
-                        kernel_h,
-                        self.padding)
-                out_width = tf_keras.utils.conv_utils.deconv_length(
-                        width,
-                        stride_w,
-                        kernel_w,
-                        self.padding)
+                out_pad_h, out_pad_w = self.output_padding
+
+            # Infer the dynamic output shape:
+            # if LooseVersion(tF_keras.__version__) >= LooseVersion("2.2.4"):
+            out_height = tf_keras.utils.conv_utils.deconv_output_length(
+                    height,
+                    kernel_h,
+                    padding=self.padding,
+                    output_padding=out_pad_h,
+                    stride=stride_h,
+                    dilation=self.dilation_rate[0])
+            out_width = tf_keras.utils.conv_utils.deconv_output_length(
+                    width,
+                    kernel_w,
+                    padding=self.padding,
+                    output_padding=out_pad_w,
+                    stride=stride_w,
+                    dilation=self.dilation_rate[1])
+            #if LooseVersion(tf_keras.__version__) >= LooseVersion("2.2.1"):
+            #    # TODO: Better value for output_padding?
+            #    out_height = tf_keras.utils.conv_utils.deconv_length(
+            #            height,
+            #            stride_h,
+            #            kernel_h,
+            #            self.padding,
+            #            None)  # output_padding
+            #    out_width = tf_keras.utils.conv_utils.deconv_length(
+            #            width,
+            #            stride_w,
+            #            kernel_w,
+            #            self.padding,
+            #            None)  # output_padding
+            #else:
+            #    out_height = tf_keras.utils.conv_utils.deconv_length(
+            #            height,
+            #            stride_h,
+            #            kernel_h,
+            #            self.padding)
+            #    out_width = tf_keras.utils.conv_utils.deconv_length(
+            #            width,
+            #            stride_w,
+            #            kernel_w,
+            #            self.padding)
 
             if self.data_format == "channels_last":
                 output_shape = (batch_size,
@@ -1169,7 +1190,7 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
         import tensorflow.keras.backend as K
 
         if self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
-            return super(Resampling2D, self).call(inputs)
+            outputs = super(Resampling2D, self).call(inputs)
 
         else:
             if self.method == Resampling2D.ResizeMethod.BILINEAR:
@@ -1186,6 +1207,7 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
                                  "their string representations.")
 
             orig_shape = K.shape(inputs)
+
             if self.data_format == "channels_first":
 
                 img_h = K.cast(orig_shape[2], K.floatx())
@@ -1226,6 +1248,20 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
                                                  align_corners=True)
             else:
                 raise ValueError("Invalid data_format:", self.data_format)
+
+        input_shape = K.int_shape(inputs)
+        if self.data_format == "channels_last":
+            output_shape = (input_shape[0],
+                            int(input_shape[1] * self.size[0] + 0.5),
+                            int(input_shape[2] * self.size[1] + 0.5),
+                            input_shape[3])
+        else:
+            output_shape = (input_shape[0],
+                            input_shape[1],
+                            int(input_shape[2] * self.size[0] + 0.5),
+                            int(input_shape[3] * self.size[1] + 0.5))
+
+        outputs.set_shape(output_shape)
 
         return outputs
 

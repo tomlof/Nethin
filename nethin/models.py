@@ -23,9 +23,11 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Activation
 from tensorflow.keras.layers import Dense, Flatten
 from tensorflow.keras.layers import Convolution1D, Convolution2D
+# from tensorflow.keras.layers import Convolution2DTranspose
 from tensorflow.keras.layers import BatchNormalization, Dropout
 from tensorflow.keras.layers import MaxPooling1D, MaxPooling2D
-from tensorflow.python.keras.utils.conv_utils import normalize_data_format
+from tensorflow.python.keras.utils import conv_utils
+# from tensorflow.python.keras.utils.conv_utils import normalize_data_format
 
 from nethin.utils import with_device, Helper
 import nethin.consts as consts
@@ -45,7 +47,7 @@ class BaseModel(six.with_metaclass(abc.ABCMeta, object)):
 
         self._nethin_name = str(nethin_name)
 
-        self.data_format = normalize_data_format(data_format)
+        self.data_format = conv_utils.normalize_data_format(data_format)
 
         if device is not None:
             device = str(device)
@@ -1405,6 +1407,7 @@ class UNet(BaseModel):
     Examples
     --------
     >>> import nethin
+    >>> import nethin.models
     >>> import numpy as np
     >>> np.random.seed(42)
     >>> import tensorflow as tf

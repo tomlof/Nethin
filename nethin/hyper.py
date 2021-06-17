@@ -265,6 +265,7 @@ class Dimension(abc.ABC):
 class Boolean(Dimension):
     """Represents a boolean variable.
     """
+
     def __init__(self,
                  name,
                  prior=None,
@@ -837,7 +838,7 @@ class GaussianProcessRegression(BaseMinimizer):
         xi = 0.01  # Used with "EI" and "PI"
         kappa = 1.96  # Used with "LCB"
         # n_random_starts = 1
-        self.n_initial_points_ = 1
+        self.n_initial_points_ = 3
 
         self.acq_optimizer_kwargs_ = {
                 "n_points": n_points,
@@ -929,6 +930,7 @@ class GaussianProcessRegression(BaseMinimizer):
 
         next_x = self.optimizer_.ask()
         next_y = f(self._space.unflatten(next_x), **kwargs)
+        # print(next_x, next_y)
         result = self.optimizer_.tell(next_x, next_y)
         result.specs = specs
 

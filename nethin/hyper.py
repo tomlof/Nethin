@@ -839,6 +839,7 @@ class GaussianProcessRegression(BaseMinimizer):
         kappa = 1.96  # Used with "LCB"
         # n_random_starts = 1
         self.n_initial_points_ = 3
+        # self.n_initial_points_ = 2
 
         self.acq_optimizer_kwargs_ = {
                 "n_points": n_points,

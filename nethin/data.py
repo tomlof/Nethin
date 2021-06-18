@@ -1931,7 +1931,7 @@ class Dicom3DDataset(DicomDataset):
 
         return image
 
-    def __len__(self):
+    def __len__(self):  # noqa: D105
         return len(self._filtered_image_names)
 
 
@@ -2052,6 +2052,7 @@ class Dicom2DDataset(DicomDataset):
         value found in your Keras config file at `~/.keras/keras.json`. If
         you never set it, then it will be "channels_last".
     """
+
     def __init__(self,
                  dir_path,
                  image_names=None,

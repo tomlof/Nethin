@@ -47,6 +47,7 @@ __all__ = ["Helper", "get_device_string", "with_device",  # "LazyImport",
            "simple_bezier", "dynamic_histogram_warping", "histogram_matching",
            "vector_median", "smooth_moving_average", "sizeof", "random_string",
            "is_npz_file", "is_image_file",
+           "gaussian",
            "ExceedingThresholdException"]
 
 
@@ -1606,6 +1607,19 @@ def is_image_file(file, certain=True):
                     return True
                 except Exception:
                     return False
+
+
+def gaussian(x, mu=0.0, sigma2=None):
+    """Return Gaussian function for a particular mean and variance."""
+    if sigma2 is None:
+        sigma2 = 1.0
+    else:
+        sigma2 = float(sigma2)
+
+    A = 1.0 / np.sqrt(sigma2 * 2.0 * np.pi)
+    B = np.exp(-0.5 * ((x - mu) / np.sqrt(sigma2))**2)
+
+    return A * B
 
 
 class ExceedingThresholdException(Exception):

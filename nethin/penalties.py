@@ -13,7 +13,34 @@ Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 import abc
 from six import with_metaclass
 
+import tensorflow as tf
+import tensorflow.keras.backend as K
+
 __all__ = ["BasePenalty", "TotalVariation2D"]
+
+
+class BaseRegularizer(tf.keras.regularizers.Regularizer):
+    pass
+
+
+class GradientPenalty(BaseRegularizer):
+    """Regularize the loss wrt. the input data.
+
+    Parameters
+    ----------
+    lambda_ : float
+        Non-negative float. The regularization parameter.
+    """
+
+    def __init__(self, lambda_, model):
+        self.lambda_ = max(0.0, float(lambda_))
+        self.model = model
+
+    def __call__(self, x):
+        return self.lambda_ * tf.reduce_sum(tf.square(x))
+
+    def get_config(self):
+        return {"lambda_": self.strength}
 
 
 class BasePenalty(with_metaclass(abc.ABCMeta, object)):

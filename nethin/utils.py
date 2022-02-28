@@ -37,7 +37,8 @@ except (ImportError):
 
 
 __all__ = ["Helper", "get_device_string", "with_device",  # "LazyImport",
-           "serialize_activations", "deserialize_activations",
+           # "serialize_activations",
+           "deserialize_activations",
            "serialize_array", "deserialize_array",
            # "to_snake_case",
            "get_json_type",
@@ -304,18 +305,20 @@ def with_device(__device, function, *args, **kwargs):
     ----------
     device : None or str
         The device to run/construct the function/object on. None means to
-        run/construct it on the default device (usually "/gpu:0"). See
-        ``nethin.utils.Helper.get_devices()`` for the list of your available
-        devices.
+        run/construct it on the default device (usually "/device:CPU:0" or
+        "/device:GPU:0"). See ``nethin.utils.Helper.get_devices()`` for the
+        list of your available devices.
 
-    function
+    function : Callable
         The function or class to run/construct.
 
     args : list, optional
-        The list of arguments to ``function``.
+        The list of arguments to ``function``. Called as
+        ``function(*args, **kwargs)``.
 
     kwargs : list, optional
-        The list of keyword arguments to ``function``.
+        The list of keyword arguments to ``function``. Called as
+        ``function(*args, **kwargs)``.
     """
     import tensorflow as tf
 
@@ -328,70 +331,70 @@ def with_device(__device, function, *args, **kwargs):
     return ret
 
 
-def serialize_activations(activations):
+# def serialize_activations(activations):
 
-    if activations is None:
-        return activations
+#     if activations is None:
+#         return activations
 
-    def serialize_one(activation):
+#     def serialize_one(activation):
 
-        from tensorflow.python import keras as tf_keras
-        from tensorflow.python.keras.engine.base_layer import Layer \
-            as BaseLayer
+#         from tensorflow.python import keras as tf_keras
+#         from tensorflow.python.keras.engine.base_layer import Layer \
+#             as BaseLayer
 
-        if isinstance(activation, six.string_types):
-            return activation
+#         if isinstance(activation, six.string_types):
+#             return activation
 
-        if isinstance(activation, BaseLayer):  # Advanced activation
-            return tf_keras.utils.generic_utils.serialize_keras_object(
-                    activation)
+#         if isinstance(activation, BaseLayer):  # Advanced activation
+#             return tf_keras.utils.generic_utils.serialize_keras_object(
+#                     activation)
 
-        # The order matters here, since Layers are also callable.
-        if callable(activation):  # A function
-            return tf_keras.utils.generic_utils.func_dump(activation)
+#         # The order matters here, since Layers are also callable.
+#         if callable(activation):  # A function
+#             return tf_keras.utils.generic_utils.func_dump(activation)
 
-        # Keras serialized config
-        if isinstance(activation, dict) \
-                and "class_name" in activation \
-                and "config" in activation:
-            return activation
+#         # Keras serialized config
+#         if isinstance(activation, dict) \
+#                 and "class_name" in activation \
+#                 and "config" in activation:
+#             return activation
 
-        # Could be a marshalled function
-        if isinstance(activation, (list, tuple)) \
-                and len(activation) == 3 \
-                and isinstance(activation[0], six.string_types):
-            try:
-                # TODO: Better way to check if it is a marshalled function?
-                # Try to unmarshal it
-                tf_keras.utils.generic_utils.func_load(activation)
+#         # Could be a marshalled function
+#         if isinstance(activation, (list, tuple)) \
+#                 and len(activation) == 3 \
+#                 and isinstance(activation[0], six.string_types):
+#             try:
+#                 # TODO: Better way to check if it is a marshalled function?
+#                 # Try to unmarshal it
+#                 tf_keras.utils.generic_utils.func_load(activation)
 
-                return activation
+#                 return activation
 
-            except ValueError:
-                pass
+#             except ValueError:
+#                 pass
 
-        return None
+#         return None
 
-    one = serialize_one(activations)  # See if it is only one
+#     one = serialize_one(activations)  # See if it is only one
 
-    if (one is None) and isinstance(activations, (list, tuple)):
+#     if (one is None) and isinstance(activations, (list, tuple)):
 
-        _activations = []
-        for activation in activations:
+#         _activations = []
+#         for activation in activations:
 
-            one = serialize_one(activation)
-            if one is not None:
-                _activations.append(one)
-            else:
-                raise ValueError("Unable to serialize activation functions.")
+#             one = serialize_one(activation)
+#             if one is not None:
+#                 _activations.append(one)
+#             else:
+#                 raise ValueError("Unable to serialize activation functions.")
 
-        return _activations
+#         return _activations
 
-    elif one is not None:
-        return one
+#     elif one is not None:
+#         return one
 
-    else:
-        raise ValueError("Unable to serialize activation functions.")
+#     else:
+#         raise ValueError("Unable to serialize activation functions.")
 
 
 def deserialize_activations(activations, length=None, device=None):
@@ -419,58 +422,63 @@ def deserialize_activations(activations, length=None, device=None):
 
     def deserialize_one(activation):
 
-        from tensorflow.python import keras as tf_keras
+        # from tensorflow.python import keras as tf_keras
+        import tensorflow.keras
 
-        # Simple activation
-        if (activation is None) or isinstance(activation, six.string_types):
-            return with_device(device, tf_keras.layers.Activation, activation)
+        # # Simple activation
+        # if (activation is None) or isinstance(activation, six.string_types):
+        #     return with_device(device,
+        #                        tensorflow.keras.layers.Activation,
+        #                        activation)
 
         # Advanced activation (it has already been created, nothing we can do)
-        if isinstance(activation, tf_keras.engine.Layer):
+        if isinstance(activation, tensorflow.keras.layers.Layer):
             return activation
 
         # Function (it has already been created, nothing we can do)
         if callable(activation):
             return activation
 
-        # Keras serialized config
-        if isinstance(activation, dict) \
-                and "class_name" in activation \
-                and "config" in activation:
+        return tensorflow.keras.activations.get(activation)
 
-            # Make advanced activation functions available per default
-            if activation["class_name"] in \
-                    dir(tf_keras.layers.advanced_activations):
-                custom_objects = {}
-                class_name = activation["class_name"]
-                for attr in dir(tf_keras.layers.advanced_activations):
-                    if class_name == attr:
-                        layer = tf_keras.layers.advanced_activations.__dict__[
-                                class_name]
-                        custom_objects[class_name] = layer
-                        break
+        # # Keras serialized config
+        # if isinstance(activation, dict) \
+        #         and "class_name" in activation \
+        #         and "config" in activation:
 
-            return with_device(device,
-                               tf_keras.activations.deserialize,
-                               activation,
-                               custom_objects=custom_objects)
+        #     # Make advanced activation functions available per default
+        #     if activation["class_name"] in \
+        #             dir(tf_keras.layers.advanced_activations):
+        #         custom_objects = {}
+        #         class_name = activation["class_name"]
+        #         for attr in dir(tf_keras.layers.advanced_activations):
+        #             if class_name == attr:
+        #                 layer = tf_keras.layers.advanced_activations.__dict__[
+        #                         class_name]
+        #                 custom_objects[class_name] = layer
+        #                 break
 
-        # Could be a marshalled function
-        if isinstance(activation, (list, tuple)) \
-                and len(activation) == 3 \
-                and isinstance(activation[0], six.string_types):
-            try:
-                # TODO: Better way to check if it is a marshalled function!
-                # Try to unmarshal it
-                return tf_keras.utils.generic_utils.func_load(activation)
+        #     return with_device(device,
+        #                        tf_keras.activations.deserialize,
+        #                        activation,
+        #                        custom_objects=custom_objects)
 
-            except EOFError:
-                pass  # "marshal data too short" => Not a marshalled function
+        # # Could be a marshalled function
+        # if isinstance(activation, (list, tuple)) \
+        #         and len(activation) == 3 \
+        #         and isinstance(activation[0], six.string_types):
+        #     try:
+        #         # TODO: Better way to check if it is a marshalled function!
+        #         # Try to unmarshal it
+        #         return tf_keras.utils.generic_utils.func_load(activation)
 
-            except ValueError:
-                pass  # ??
+        #     except EOFError:
+        #         pass  # "marshal data too short" => Not a marshalled function
 
-        return None
+        #     except ValueError:
+        #         pass  # ??
+
+        # return None
 
     one = deserialize_one(activations)
 
@@ -482,7 +490,6 @@ def deserialize_activations(activations, length=None, device=None):
             for i in range(1, length):
                 one = deserialize_one(activations)
                 _activations.append(one)
-            return _activations
     else:
 
         if length is not None:
@@ -495,12 +502,12 @@ def deserialize_activations(activations, length=None, device=None):
 
             one = deserialize_one(activation)
 
-            if one is None:
-                raise ValueError("Unable to deserialize activation functions.")
+            # if one is None:
+            #     raise ValueError("Unable to deserialize activation functions.")
 
             _activations.append(one)
 
-        return _activations
+    return _activations
 
 
 def serialize_array(array):

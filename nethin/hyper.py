@@ -20,6 +20,11 @@ import numpy as np
 
 def _import_skopt(message="This operation requires 'scikit-optimize'."):
     try:
+        # "Monkey patch" for missing MaskedArray dependence in skopt:
+        #     https://github.com/scikit-optimize/scikit-optimize/issues/902
+        from numpy.ma import MaskedArray
+        import sklearn.utils.fixes
+        sklearn.utils.fixes.MaskedArray = MaskedArray
         import skopt
     except ModuleNotFoundError:
         raise RuntimeError(message)

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Contains custom or adapted Keras layers.
+Contains custom or adapted layers.
 
 Created on Thu Oct 12 14:35:08 2017
+
+Copyright (c) 2017-2022, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -10,19 +12,335 @@ Created on Thu Oct 12 14:35:08 2017
 """
 import six
 from enum import Enum
-from distutils.version import LooseVersion
+
+import numpy as np
 
 import tensorflow as tf
-from tensorflow.python import keras as tf_keras
+# from tensorflow.python import keras as tf_keras
+import tensorflow.keras.layers
+import tensorflow.keras.backend as K
 
-__all__ = ["MaxPooling2D_", "MaxUnpooling2D_",
+__all__ = ["SharpCosSim2D",
+           "MaxPooling2D_", "MaxUnpooling2D_",
            "MaxPoolingMask2D", "MaxUnpooling2D",
            "Convolution1D",
            "Convolution2DTranspose", "Resampling2D"]
 
 
-class MaxPoolingMask2D(tf_keras.engine.base_layer.Layer):
-    """A max layer for 2D images that only computes the pooling mask.
+class SharpCosSim2D(tensorflow.keras.layers.Layer):
+    """A Sharpened Cosine Similarity layer for 2D inputs.
+
+    Adapted from Raphael Pisoni's implementation at:
+
+        https://colab.research.google.com/drive/1Lo-P_lMbw3t2RTwpzy1p8h0uKjkCx-RB
+
+    Parameters
+    ----------
+    filters: int, one of [1, 3, 5]
+        Non-negative integer. The dimensionality of the output space (i.e. the
+        number of output filters in the convolution).
+
+    kernel_size: int, one of [1, 3, 5]
+        An integer or tuple/list of 2 integers, specifying the size of the 2D
+        window. The single integer specifies the same value for all spatial
+        dimensions.
+
+    strides: int, optional
+        A non-negative integer specifying the stride along the height and
+        width. The single integer specify the value for all spatial dimensions.
+        The default value is 1.
+
+    depthwise_separable: bool, optional
+        The separable operation consist of first performing a depthwise spatial
+        filter operation (which acts on each input channel separately) followed
+        by a pointwise operation which mixes the resulting output channels. The
+        default value is False.
+
+    padding: str, optional
+        One of `"valid"` or `"same"` (case-insensitive). `"valid"` means no
+        padding. `"same"` results in padding with zeros evenly to the
+        left/right or up/down of the input. When `padding="same"` and
+        `strides=1`, the output has the same size as the input.
+
+    data_format : str, optional
+        Currently only supports ``"channels_last"``.
+
+    kernel_initializer : keras.initializers.Initializer, optional
+        Initializer for the `kernel` weights matrix (see
+        `keras.initializers`). Defaults to `'glorot_uniform'`.
+
+    bias_initializer : keras.initializers.Initializer, optional
+        Initializer for the bias vector (see `keras.initializers`). Defaults
+        to `'zeros'.
+    """
+
+    def __init__(self,
+                 filters,
+                 kernel_size,
+                 strides=1,
+                 depthwise_separable=False,
+                 padding="valid",
+                 data_format="channels_last",
+                 kernel_initializer="glorot_uniform",
+                 bias_initializer="zeros"):
+
+        super(SharpCosSim2D, self).__init__()
+
+        kernel_size = max(1, int(kernel_size))
+        if kernel_size not in [1, 3, 5]:
+            raise ValueError("``kernel_size`` must be 1, 3, or 5.")
+        self.kernel_size = kernel_size
+        if self.kernel_size == 1:
+            self.stack = lambda x: x
+        elif self.kernel_size == 3:
+            self.stack = self.stack3x3
+        elif self.kernel_size == 5:
+            self.stack = self.stack5x5
+
+        self.filters = max(1, int(filters))
+        self.strides = max(1, int(strides))
+        self.depthwise_separable = bool(depthwise_separable)
+
+        padding = str(padding).lower()
+        if padding == "same":
+            self.pad = self.kernel_size // 2
+            self.pad_1 = 1
+            self.clip = 0
+        elif padding == "valid":
+            self.pad = 0
+            self.pad_1 = 0
+            self.clip = self.kernel_size // 2
+        else:
+            raise ValueError("`padding` must be `'same'` or `'valid'`.")
+
+        if data_format != "channels_last":
+            raise ValueError("The `SharpCosSim2D` currently only works with "
+                             "the data format `'channels_last'`.")
+
+        self.kernel_initializer = tensorflow.keras.initializers.get(
+                kernel_initializer)
+        self.bias_initializer = tensorflow.keras.initializers.get(
+                bias_initializer)
+
+    @tf.function
+    def l2_normal(self, x, axis=None, epsilon=K.epsilon()):
+        """Compute the L2 norm, but make the result at least epsilon."""
+        square_sum = tf.reduce_sum(tf.square(x), axis, keepdims=True)
+        x_inv_norm = tf.sqrt(tf.maximum(square_sum, epsilon))
+        return x_inv_norm
+
+    @tf.function
+    def l2_norm(self, x, axis=None):
+        """Compute the L2 norm."""
+        square_sum = tf.reduce_sum(tf.square(x), axis, keepdims=True)
+        x_norm = tf.sqrt(square_sum)
+        return x_norm
+
+    # @tf.function
+    # def sigplus(self, x):
+    #     """Compute the sigmoid times the softplus.
+
+    #     This is closer to the ReLU than just a softplus.
+    #     """
+    #     return tf.nn.sigmoid(x) * tf.nn.softplus(x)
+
+    @tf.function
+    def stack3x3(self, image):
+        x = tf.shape(image)[2]
+        y = tf.shape(image)[1]
+        stack = tf.stack([
+            # Top row
+            tf.pad(image[:, :y - 1 - self.clip:, :x - 1 - self.clip, :], tf.constant([[0, 0], [self.pad, 0], [self.pad, 0], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 1 - self.clip, self.clip:x - self.clip, :], tf.constant([[0, 0], [self.pad, 0], [0, 0], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 1 - self.clip, 1 + self.clip:, :], tf.constant([[0, 0], [self.pad, 0], [0, self.pad], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+
+            # Middle row
+            tf.pad(image[:, self.clip:y - self.clip, :x - 1 - self.clip, :], tf.constant([[0, 0], [0, 0], [self.pad, 0], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+            image[:, self.clip:y - self.clip:self.strides, self.clip:x - self.clip:self.strides, :],
+            tf.pad(image[:, self.clip:y - self.clip, 1 + self.clip:, :], tf.constant([[0, 0], [0, 0], [0, self.pad], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+
+            # Bottom row
+            tf.pad(image[:, 1 + self.clip:, :x - 1 - self.clip, :], tf.constant([[0, 0], [0, self.pad], [self.pad, 0], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:, self.clip:x - self.clip, :], tf.constant([[0, 0], [0, self.pad], [0, 0], [0, 0]])) [:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:, 1 + self.clip:, :], tf.constant([[0, 0], [0, self.pad], [0, self.pad], [0, 0]])) [:, ::self.strides, ::self.strides, :]
+        ], axis=3)
+
+        return stack
+    
+    @tf.function
+    def stack5x5(self, image):
+        x = tf.shape(image)[2]
+        y = tf.shape(image)[1]
+        stack = tf.stack([
+            # Row 0 (top row)
+            tf.pad(image[:, :y - 2 - self.clip:, :x - 2 - self.clip, :], tf.constant([[0, 0], [self.pad, 0], [self.pad, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 2 - self.clip:, 1:x - 1 - self.clip, :], tf.constant([[0, 0], [self.pad, 0], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 2 - self.clip:, self.clip:x - self.clip, :], tf.constant([[0, 0], [self.pad, 0], [0, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 2 - self.clip:, 1 + self.clip:-1, :], tf.constant([[0, 0], [self.pad, 0], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, :y - 2 - self.clip:, 2 + self.clip: , :], tf.constant([[0, 0], [self.pad, 0], [0, self.pad], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+
+            # Row 1
+            tf.pad(image[:, 1:y - 1 - self.clip:, :x - 2 - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1:y - 1 - self.clip:, 1:x - 1 - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1:y - 1 - self.clip:, self.clip:x - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [0, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1:y - 1 - self.clip:, 1 + self.clip:-1, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1:y - 1 - self.clip:, 2 + self.clip:, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [0, self.pad], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+
+            # Row 2 (center row)
+            tf.pad(image[:, self.clip:y - self.clip, :x - 2 - self.clip, :], tf.constant([[0, 0], [0, 0], [self.pad, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, self.clip:y - self.clip, 1:x - 1 - self.clip, :], tf.constant([[0, 0], [0, 0], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+                   image[:, self.clip:y - self.clip, self.clip:x - self.clip, :][:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, self.clip:y - self.clip, 1 + self.clip:-1, :], tf.constant([[0, 0], [0, 0], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, self.clip:y - self.clip, 2 + self.clip:, :], tf.constant([[0, 0], [0, 0], [0, self.pad], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+
+            # Row 3
+            tf.pad(image[:, 1 + self.clip:-1, :x - 2 - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:-1, 1:x - 1 - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:-1, self.clip:x - self.clip, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [0, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:-1, 1 + self.clip:-1, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 1 + self.clip:-1, 2 + self.clip:, :], tf.constant([[0, 0], [self.pad_1, self.pad_1], [0, self.pad], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+
+            # Row 4 (bottom row)
+            tf.pad(image[:, 2 + self.clip:, :x - 2 - self.clip, :], tf.constant([[0, 0], [0, self.pad], [self.pad, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 2 + self.clip:, 1:x - 1 - self.clip, :], tf.constant([[0, 0], [0, self.pad], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 2 + self.clip:, self.clip:x - self.clip, :], tf.constant([[0, 0], [0, self.pad], [0, 0], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 2 + self.clip:, 1 + self.clip:-1, :], tf.constant([[0, 0], [0, self.pad], [self.pad_1, self.pad_1], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+            tf.pad(image[:, 2 + self.clip:, 2 + self.clip:, :], tf.constant([[0, 0], [0, self.pad], [0, self.pad], [0, 0]]))[:, ::self.strides, ::self.strides, :],
+        ], axis=3)
+
+        return stack
+
+    def build(self, input_shape):
+        self.in_shape = input_shape
+        self.out_y = int(
+            np.ceil((self.in_shape[1] - 2 * self.clip) / self.strides) + 0.5)
+        self.out_x = int(
+            np.ceil((self.in_shape[2] - 2 * self.clip) / self.strides) + 0.5)
+        self.flat_size = self.out_x * self.out_y
+        self.channels = self.in_shape[3]
+
+        if self.depthwise_separable:
+            self.w = self.add_weight(
+                shape=(1,
+                       self.kernel_size * self.kernel_size,
+                       self.filters),
+                initializer=self.kernel_initializer,
+                name='w',
+                trainable=True,
+            )
+        else:
+            self.w = self.add_weight(
+                shape=(1,
+                       self.channels * self.kernel_size * self.kernel_size,
+                       self.filters),
+                initializer=self.kernel_initializer,
+                name='w',
+                trainable=True,
+            )
+
+        # self.b = self.add_weight(
+        #     shape=(self.filters,),
+        #     initializer="zeros",
+        #     trainable=True,
+        #     name='b')
+        self.b = self.add_weight(
+            shape=(self.filters,),
+            initializer=self.bias_initializer,
+            trainable=True,
+            name='b')
+
+        p_init = tf.keras.initializers.Constant(value=2.0)
+
+        self.p = self.add_weight(
+            shape=(self.filters,),
+            initializer=p_init,
+            trainable=True,
+            constraint=tf.keras.constraints.NonNeg(),
+            name='p')
+
+        noise_init = tf.keras.initializers.Constant(value=K.epsilon())
+
+        self.y = self.add_weight(
+            shape=(1,),
+            initializer=noise_init,
+            trainable=True,
+            constraint=tf.keras.constraints.NonNeg(),
+            name='y')
+
+        self.q = self.add_weight(
+            shape=(1,),
+            initializer=noise_init,
+            trainable=True,
+            constraint=tf.keras.constraints.NonNeg(),
+            name='q')
+
+        # self.e = self.add_weight(
+        #     shape=(1,),
+        #     initializer=noise_init,
+        #     trainable=True,
+        #     constraint=tf.keras.constraints.NonNeg(),
+        #     name='e')
+
+        self.s = self.add_weight(
+            shape=(1,),
+            initializer=tf.keras.initializers.Constant(value=100.0),
+            trainable=True,
+            constraint=tf.keras.constraints.NonNeg(),
+            name='s')
+
+
+    def call_body(self, inputs):
+        channels = tf.shape(inputs)[-1]
+        x = self.stack(inputs)
+        x = tf.reshape(x,
+                       (-1,
+                        self.flat_size,
+                        channels * self.kernel_size * self.kernel_size))
+        x_norm = self.l2_normal(x, axis=2) + self.y
+        w_norm = self.l2_normal(self.w, axis=1) + self.q
+        x = tf.matmul(x / x_norm,
+                      self.w / w_norm)
+        # sign = tf.sign(x)
+        sign = tf.tanh(self.s * x)  # "Soft sign"
+        x = tf.abs(x) + K.epsilon()
+        # x = tf.pow(x, self.sigplus(self.p))
+        x = tf.pow(x, self.p)
+        x = sign * x + self.b
+        x = tf.reshape(x,
+                       (-1,
+                        self.out_y,
+                        self.out_x,
+                        self.filters))
+        return x
+    
+    @tf.function
+    def call(self, inputs, training=None):
+
+        x = inputs
+
+        if self.depthwise_separable:
+            # channels = tf.shape(inputs)[-1]
+            x = tf.vectorized_map(
+                self.call_body,
+                tf.expand_dims(tf.transpose(x, (3, 0, 1, 2)),
+                               axis=-1))
+            # s = tf.shape(x)
+            x = tf.transpose(x, (1, 2, 3, 4, 0))
+            x = tf.reshape(x,
+                           (-1,
+                            self.out_y,
+                            self.out_x,
+                            self.channels * self.filters))
+        else:
+            x = self.call_body(x)
+
+        outputs = x
+
+        return outputs
+
+
+class MaxPoolingMask2D(tensorflow.keras.layers.Layer):
+    """A max pooling layer for 2D images that only computes the pooling mask.
 
     Parameters
     ----------
@@ -160,7 +478,7 @@ class MaxPoolingMask2D(tf_keras.engine.base_layer.Layer):
         return mask
 
 
-class MaxPooling2D_(tf_keras.engine.base_layer.Layer):
+class MaxPooling2D_(tensorflow.keras.layers.Layer):
     """A max pooling layer for 2D images that also computes the pooling mask.
 
     Parameters
@@ -334,7 +652,7 @@ class MaxPooling2D_(tf_keras.engine.base_layer.Layer):
         return outputs
 
 
-class MaxUnpooling2D(tf_keras.engine.base_layer.Layer):
+class MaxUnpooling2D(tensorflow.keras.layers.Layer):
     """A max unpooling layer for 2D images that can also use a pooling mask.
 
     Parameters
@@ -609,7 +927,7 @@ class MaxUnpooling2D(tf_keras.engine.base_layer.Layer):
 
 
 # TODO: Remove!
-class MaxUnpooling2D_(tf_keras.engine.base_layer.Layer):
+class MaxUnpooling2D_(tensorflow.keras.layers.Layer):
     """A max unpooling layer for 2D images that can also use a pooling mask.
 
     Parameters
@@ -894,7 +1212,7 @@ class MaxUnpooling2D_(tf_keras.engine.base_layer.Layer):
 #        return cond
 
 
-class MaxPooling1D(tf_keras.layers.MaxPooling1D):
+class MaxPooling1D(tensorflow.keras.layers.MaxPooling1D):
     """Keras' ``MaxPooling1D`` requires the input be in "channels_last" data
     format. This layer adds functionality for both "channels_last" and
     "channels_first".
@@ -918,7 +1236,7 @@ class MaxPooling1D(tf_keras.layers.MaxPooling1D):
         return outputs
 
 
-class Convolution1D(tf_keras.layers.Convolution1D):
+class Convolution1D(tensorflow.keras.layers.Convolution1D):
     """Keras' ``Convolution1D`` requires the input be in "channels_last" data
     format. This layer adds functionality for both "channels_last" and
     "channels_first".
@@ -942,7 +1260,7 @@ class Convolution1D(tf_keras.layers.Convolution1D):
         return outputs
 
 
-class Convolution2DTranspose(tf_keras.layers.Convolution2DTranspose):
+class Convolution2DTranspose(tensorflow.keras.layers.Convolution2DTranspose):
     """Fixes an output shape error of ``Convolution2DTranspose``.
 
     Described in Tensorflow issue # 8972:
@@ -1042,7 +1360,7 @@ class Convolution2DTranspose(tf_keras.layers.Convolution2DTranspose):
         return outputs
 
 
-class Resampling2D(tf_keras.layers.UpSampling2D):
+class Resampling2D(tensorflow.keras.layers.UpSampling2D):
     """Resampling layer for 2D inputs.
 
     Resizes the input images to ``size``.
@@ -1053,9 +1371,9 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
         The size of the resampled image, in the format ``(rows, columns)``.
 
     method : Resampling2D.ResizeMethod or str, optional
-        The resampling method to use. Default is
-        ``Resampling2D.ResizeMethod.BILINEAR``. The string name of the enum
-        may also be provided.
+        The resampling method to use. Default is None, which means
+        ``Resampling2D.ResizeMethod.BILINEAR`` is used. The string name of the
+        enum may also be provided.
 
     data_format: str
         One of ``channels_last`` (default) or ``channels_first``. The ordering
@@ -1070,70 +1388,100 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
     Examples
     --------
     >>> import numpy as np
-    >>> from keras.layers import Input
-    >>> from keras.models import Model
-    >>> import nethin.layers as layers
     >>> np.random.seed(42)
+    >>>
+    >>> import tensorflow.keras
+    >>>
+    >>> import nethin.layers
     >>>
     >>> X = np.array([[1, 2],
     ...               [2, 3]])
     >>> X = np.reshape(X, (1, 2, 2, 1))
-    >>> resize = layers.Resampling2D((2, 2), data_format="channels_last")
-    >>> inputs = Input(shape=(2, 2, 1))
+    >>>
+    >>> resize = nethin.layers.Resampling2D(
+    ...         (2, 2),
+    ...         data_format="channels_last")
+    >>>
+    >>> inputs = tensorflow.keras.layers.Input(shape=(2, 2, 1))
     >>> outputs = resize(inputs)
-    >>> model = Model(inputs, outputs)
+    >>> model = tensorflow.keras.models.Model(inputs, outputs)
+    >>>
     >>> Y = model.predict_on_batch(X)
     >>> Y[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1. ,  1.5,  2. ,  2. ],
-           [ 1.5,  2. ,  2.5,  2.5],
-           [ 2. ,  2.5,  3. ,  3. ],
-           [ 2. ,  2.5,  3. ,  3. ]], dtype=float32)
-    >>> resize = layers.Resampling2D((0.5, 0.5), data_format="channels_last")
-    >>> inputs = Input(shape=(4, 4, 1))
+    array([[1.  , 1.25, 1.75, 2.  ],
+           [1.25, 1.5 , 2.  , 2.25],
+           [1.75, 2.  , 2.5 , 2.75],
+           [2.  , 2.25, 2.75, 3.  ]], dtype=float32)
+    >>>
+    >>> resize = nethin.layers.Resampling2D(
+    ...         (0.5, 0.5),
+    ...         data_format="channels_last")
+    >>>
+    >>> inputs = tensorflow.keras.layers.Input(shape=(4, 4, 1))
     >>> outputs = resize(inputs)
-    >>> model = Model(inputs, outputs)
+    >>> model = tensorflow.keras.models.Model(inputs, outputs)
+    >>>
     >>> X_ = model.predict_on_batch(Y)
     >>> X_[0, :, :, 0]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1.,  2.],
-           [ 2.,  3.]], dtype=float32)
+    array([[1.25, 2.  ],
+           [2.  , 2.75]], dtype=float32)
     >>>
     >>> X = np.array([[1, 2],
     ...               [2, 3]])
     >>> X = np.reshape(X, (1, 1, 2, 2))
-    >>> resize = layers.Resampling2D((2, 2), data_format="channels_first")
-    >>> inputs = Input(shape=(1, 2, 2))
+    >>>
+    >>> resize = nethin.layers.Resampling2D(
+    ...         (2, 2),
+    ...         data_format="channels_first")
+    >>>
+    >>> inputs = tensorflow.keras.layers.Input(shape=(1, 2, 2))
     >>> outputs = resize(inputs)
-    >>> model = Model(inputs, outputs)
+    >>> model = tensorflow.keras.models.Model(inputs, outputs)
+    >>>
     >>> Y = model.predict_on_batch(X)
     >>> Y[0, 0, :, :]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1. ,  1.5,  2. ,  2. ],
-           [ 1.5,  2. ,  2.5,  2.5],
-           [ 2. ,  2.5,  3. ,  3. ],
-           [ 2. ,  2.5,  3. ,  3. ]], dtype=float32)
-    >>> resize = layers.Resampling2D((0.5, 0.5), data_format="channels_first")
-    >>> inputs = Input(shape=(1, 4, 4))
+    array([[1.  , 1.25, 1.75, 2.  ],
+           [1.25, 1.5 , 2.  , 2.25],
+           [1.75, 2.  , 2.5 , 2.75],
+           [2.  , 2.25, 2.75, 3.  ]], dtype=float32)
+    >>>
+    >>> resize = nethin.layers.Resampling2D(
+    ...         (0.5, 0.5),
+    ...         data_format="channels_first")
+    >>>
+    >>> inputs = tensorflow.keras.layers.Input(shape=(1, 4, 4))
     >>> outputs = resize(inputs)
-    >>> model = Model(inputs, outputs)
+    >>> model = tensorflow.keras.models.Model(inputs, outputs)
+    >>>
     >>> X_ = model.predict_on_batch(Y)
     >>> X_[0, 0, :, :]  # doctest: +NORMALIZE_WHITESPACE
-    array([[ 1.,  2.],
-           [ 2.,  3.]], dtype=float32)
+    array([[1.25, 2.  ],
+           [2.  , 2.75]], dtype=float32)
     """
     class ResizeMethod(Enum):
-        BILINEAR = "BILINEAR"  # Bilinear interpolation
         NEAREST_NEIGHBOR = "NEAREST_NEIGHBOR"  # Nearest neighbor interpolation
+        BILINEAR = "BILINEAR"  # Bilinear interpolation
         BICUBIC = "BICUBIC"  # Bicubic interpolation
         AREA = "AREA"  # Area interpolation
 
     def __init__(self,
                  size,
-                 method=ResizeMethod.BILINEAR,
+                 method=None,
                  data_format=None,
                  **kwargs):
 
-        super(Resampling2D, self).__init__(size=size,
-                                           data_format=data_format,
-                                           **kwargs)
+        if method is None:
+            method = Resampling2D.ResizeMethod.BILINEAR
+
+        if method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
+            super(Resampling2D, self).__init__(size=size,
+                                               data_format=data_format,
+                                               interpolation="nearest",
+                                               **kwargs)
+        else:
+            super(Resampling2D, self).__init__(size=size,
+                                               data_format=data_format,
+                                               **kwargs)
 
         if isinstance(method, Resampling2D.ResizeMethod):
             self.method = method
@@ -1141,10 +1489,12 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
             try:
                 self.method = Resampling2D.ResizeMethod[method]
             except KeyError:
+                print(f"1 {method}")
                 raise ValueError("``method`` must be of type "
                                  "``Resampling2D.ResizeMethod`` or one of "
                                  "their string representations.")
         else:
+            print(f"2 {method}")
             raise ValueError("``method`` must be of type "
                              "``Resampling2D.ResizeMethod`` or one of "
                              "their string representations.")
@@ -1180,6 +1530,11 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
             else:
                 width = None
 
+            print((input_shape[0],
+                    height,
+                    width,
+                    input_shape[3]))
+
             return (input_shape[0],
                     height,
                     width,
@@ -1193,15 +1548,16 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
             outputs = super(Resampling2D, self).call(inputs)
 
         else:
-            if self.method == Resampling2D.ResizeMethod.BILINEAR:
-                method = tf.image.ResizeMethod.BILINEAR
-            elif self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
+            if self.method == Resampling2D.ResizeMethod.NEAREST_NEIGHBOR:
                 method = tf.image.ResizeMethod.NEAREST_NEIGHBOR
+            elif self.method == Resampling2D.ResizeMethod.BILINEAR:
+                method = tf.image.ResizeMethod.BILINEAR
             elif self.method == Resampling2D.ResizeMethod.BICUBIC:
                 method = tf.image.ResizeMethod.BICUBIC
             elif self.method == Resampling2D.ResizeMethod.AREA:
                 method = tf.image.ResizeMethod.AREA
             else:  # Should not be able to happen!
+                print(method)
                 raise ValueError("``method`` must be of type "
                                  "``Resampling2D.ResizeMethod`` or one of "
                                  "their string representations.")
@@ -1218,10 +1574,9 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
                 new_w = K.cast(img_w * fac_w + 0.5, "int32")
 
                 inputs = K.permute_dimensions(inputs, [0, 2, 3, 1])
-                outputs = tf.image.resize_images(inputs,  # !TF
-                                                 [new_h, new_w],
-                                                 method=method,
-                                                 align_corners=True)
+                outputs = tf.image.resize(inputs,
+                                          [new_h, new_w],
+                                          method=method)
                 outputs = K.permute_dimensions(outputs, [0, 3, 1, 2])
 
                 # new_shape = K.cast(orig_shape[2:], K.floatx())
@@ -1242,26 +1597,26 @@ class Resampling2D(tf_keras.layers.UpSampling2D):
                 new_h = K.cast(img_h * fac_h + 0.5, "int32")
                 new_w = K.cast(img_w * fac_w + 0.5, "int32")
 
-                outputs = tf.image.resize_images(inputs,  # !TF
-                                                 [new_h, new_w],
-                                                 method=method,
-                                                 align_corners=True)
+                outputs = tf.image.resize(inputs,
+                                          [new_h, new_w],
+                                          method=method)
+
             else:
                 raise ValueError("Invalid data_format:", self.data_format)
 
-        input_shape = K.int_shape(inputs)
-        if self.data_format == "channels_last":
-            output_shape = (input_shape[0],
-                            int(input_shape[1] * self.size[0] + 0.5),
-                            int(input_shape[2] * self.size[1] + 0.5),
-                            input_shape[3])
-        else:
-            output_shape = (input_shape[0],
-                            input_shape[1],
-                            int(input_shape[2] * self.size[0] + 0.5),
-                            int(input_shape[3] * self.size[1] + 0.5))
+        # input_shape = K.int_shape(inputs)
+        # if self.data_format == "channels_last":
+        #     output_shape = (input_shape[0],
+        #                     int(input_shape[1] * self.size[0] + 0.5),
+        #                     int(input_shape[2] * self.size[1] + 0.5),
+        #                     input_shape[3])
+        # else:
+        #     output_shape = (input_shape[0],
+        #                     input_shape[1],
+        #                     int(input_shape[2] * self.size[0] + 0.5),
+        #                     int(input_shape[3] * self.size[1] + 0.5))
 
-        outputs.set_shape(output_shape)
+        # outputs.set_shape(output_shape)
 
         return outputs
 

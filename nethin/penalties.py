@@ -4,7 +4,7 @@ This module contains penalties for activations, weights and biases.
 
 Created on Mon Nov  6 13:43:46 2017
 
-Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2023, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
@@ -13,8 +13,17 @@ Copyright (c) 2017-2019, Tommy Löfstedt. All rights reserved.
 import abc
 from six import with_metaclass
 
-import tensorflow as tf
-import tensorflow.keras.backend as K
+try:
+    import tensorflow as tf
+except AttributeError:
+    import numpy as np  # Monkey-patch numpy...
+    np.object = object
+    np.bool = bool
+    np.int = int
+    np.typeDict = np.sctypeDict
+    import tensorflow as tf
+
+# import tensorflow.keras.backend as K
 
 __all__ = ["BasePenalty", "TotalVariation2D"]
 
@@ -57,6 +66,7 @@ class BasePenalty(with_metaclass(abc.ABCMeta, object)):
         in your Keras config file at ``~/.keras/keras.json``. If you never set
         it, then it will be "channels_last".
     """
+
     def __init__(self, data_format=None):
 
         from tensorflow.python import keras as tf_keras
@@ -97,6 +107,7 @@ class TotalVariation2D(BasePenalty):
         in your Keras config file at ``~/.keras/keras.json``. If you never set
         it, then it will be "channels_last".
     """
+
     def __init__(self,
                  gamma,
                  mean=True,

@@ -4,21 +4,30 @@ Contains ready-to-use Keras-compatible deep neural networks.
 
 Created on Mon Oct  9 13:48:25 2017
 
-Copyright (c) 2017-2022, Tommy Löfstedt. All rights reserved.
+Copyright (c) 2017-2023, Tommy Löfstedt. All rights reserved.
 
 @author:  Tommy Löfstedt
 @email:   tommy.lofstedt@umu.se
 @license: BSD 3-clause.
 """
-import abc
-import json
-import six
+# import abc
+# import json
+# import six
 import warnings
 
-import h5py
+# import h5py
 import numpy as np
 
-import tensorflow as tf
+try:
+    import tensorflow as tf
+except AttributeError:
+    # Monkey-patch numpy...
+    np.object = object
+    np.bool = bool
+    np.int = int
+    np.typeDict = np.sctypeDict
+    import tensorflow as tf
+
 import tensorflow.keras
 import tensorflow.keras.backend as K
 
@@ -64,13 +73,15 @@ class BaseModel(tf.keras.Model):
         super(BaseModel, self).__init__(name=name)
 
         self._input_shape = tuple([int(s) for s in input_shape])
+        self._input_dim = len(self._input_shape) - 1
 
         if data_format is None:
             data_format = K.image_data_format()
         self.data_format = str(data_format)
-        assert(self.data_format in ["channels_last", "channels_first"])
+        assert (self.data_format in ["channels_last", "channels_first"])
 
     def build_graph(self):
+        """Properly build the compute graph for composite models."""
         # TODO: Handle multiple inputs
         inputs = tf.keras.layers.Input(shape=self._input_shape)
         return tf.keras.Model(inputs=inputs, outputs=self.call(inputs))
@@ -177,7 +188,7 @@ class FullyConnectedNetwork(BaseModel):
         super(FullyConnectedNetwork, self).__init__(input_shape,
                                                     name=name)
 
-        assert(len(self._input_shape) in [1])
+        assert (len(self._input_shape) in [1])
 
         if not isinstance(num_neurons, (list, tuple)):
             num_neurons = (num_neurons,)
@@ -234,7 +245,7 @@ class FullyConnectedNetwork(BaseModel):
             self.build(self._input_shape)
 
     def build(self, input_shape):
-
+        """Create all layers."""
         # Create the network's layers
         self._dense = [None] * len(self.num_neurons)
         self._batchnorm = [None] * len(self.num_neurons)
@@ -276,7 +287,7 @@ class FullyConnectedNetwork(BaseModel):
             self._dropout[i] = do
 
     def call(self, inputs, training=False):
-
+        """Combine all layers into an end-to-end model."""
         x = inputs
 
         # Build the network
@@ -302,7 +313,7 @@ class ConvolutionalNetwork(BaseModel):
     """Generates a standard ConvNet architechture.
 
     The architecture has Conv + BN + ReLU and Maxpool layers, with at least one
-    Dense layers at the end.
+    Dense layer at the end.
 
     Parameters
     ----------
@@ -435,6 +446,8 @@ class ConvolutionalNetwork(BaseModel):
                  bias_regularizer=None,
                  dense_sizes=(1,),
                  dense_activations=("sigmoid",),
+                 dense_kernel_regularizer=None,
+                 dense_bias_regularizer=None,
                  use_batch_normalization=True,
                  dropout_rate=0.5,
                  data_format=None,
@@ -444,8 +457,8 @@ class ConvolutionalNetwork(BaseModel):
                                                    data_format=data_format,
                                                    name=name)
 
-        assert(len(self._input_shape) in [2, 3, 4])
-        self._input_dim = len(self._input_shape) - 1
+        assert (len(self._input_shape) in [2, 3, 4])
+        # self._input_dim = len(self._input_shape) - 1
 
         if not isinstance(num_filters, (list, tuple)):
             num_filters = (num_filters,)
@@ -456,13 +469,13 @@ class ConvolutionalNetwork(BaseModel):
         if not isinstance(filter_sizes, (list, tuple)):
             filter_sizes = (filter_sizes,)
         self.filter_sizes = tuple([int(s) for s in filter_sizes])
-        assert(all([s > 0 for s in self.filter_sizes]))
-        assert(len(self.num_filters) == len(self.filter_sizes))
+        assert (all([s > 0 for s in self.filter_sizes]))
+        assert (len(self.num_filters) == len(self.filter_sizes))
 
         if not isinstance(subsample, (list, tuple)):
             subsample = (subsample,)
         self.subsample = tuple([bool(s) for s in subsample])
-        assert(len(self.num_filters) == len(self.subsample))
+        assert (len(self.num_filters) == len(self.subsample))
 
         self.use_maxpool = bool(use_maxpool)
 
@@ -497,7 +510,7 @@ class ConvolutionalNetwork(BaseModel):
         if not isinstance(dense_sizes, (list, tuple)):
             dense_sizes = (dense_sizes,)
         self.dense_sizes = tuple([int(s) for s in dense_sizes])
-        assert(all([s > 0 for s in self.dense_sizes]))
+        assert (all([s > 0 for s in self.dense_sizes]))
 
         if isinstance(dense_activations, str) or dense_activations is None:
             dense_activations = [tf.keras.layers.Activation(dense_activations)
@@ -525,6 +538,11 @@ class ConvolutionalNetwork(BaseModel):
         else:
             raise ValueError("``dense_activations`` must be a str, or a tuple "
                              "of str or ``Activation``.")
+
+        self.dense_kernel_regularizer = tf.keras.regularizers.get(
+            dense_kernel_regularizer)
+        self.dense_bias_regularizer = tf.keras.regularizers.get(
+            dense_bias_regularizer)
 
         self.use_batch_normalization = bool(use_batch_normalization)
 
@@ -655,7 +673,7 @@ class ConvolutionalNetwork(BaseModel):
                                 data_format=self.data_format)
                     else:
                         raise ValueError("The input image dimensions are "
-                                          "wrong!")
+                                         "wrong!")
                 else:
                     if self._input_dim == 1:
                         subsample = tf.keras.layers.Convolution1D(
@@ -731,8 +749,8 @@ class ConvolutionalNetwork(BaseModel):
                     use_bias=True,
                     kernel_initializer='glorot_uniform',
                     bias_initializer='zeros',
-                    kernel_regularizer=None,
-                    bias_regularizer=None,
+                    kernel_regularizer=self.dense_kernel_regularizer,
+                    bias_regularizer=self.dense_bias_regularizer,
                     activity_regularizer=None,
                     kernel_constraint=None,
                     bias_constraint=None)
@@ -753,7 +771,7 @@ class ConvolutionalNetwork(BaseModel):
                 self._dropout[i] = do
 
     def call(self, inputs, training=False):
-
+        """Combine all layers into an end-to-end model."""
         x = inputs
 
         # Build the network
@@ -843,6 +861,8 @@ class FullyConvolutionalNetwork(tf.keras.Model):
                  filter_sizes=(3, 3, 3, 3, 3),
                  activations="relu",
                  use_batch_normalization=True,
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
                  data_format=None,
                  # device=None,
                  name="FullyConvolutionalNetwork",
@@ -862,7 +882,7 @@ class FullyConvolutionalNetwork(tf.keras.Model):
 
         self._filter_sizes = tuple(filter_sizes)
 
-        assert(len(self._num_filters) == len(self._filter_sizes))
+        assert (len(self._num_filters) == len(self._filter_sizes))
 
         if isinstance(activations, str) or activations is None:
 
@@ -884,7 +904,8 @@ class FullyConvolutionalNetwork(tf.keras.Model):
             _activations = [None] * len(activations)
             for i in range(len(activations)):
                 if isinstance(activations[i], str) or activations[i] is None:
-                    _activations[i] = tf.keras.layers.Activation(activations[i])
+                    _activations[i] = tf.keras.layers.Activation(
+                        activations[i])
                 else:
                     _activations[i] = activations[i]
 
@@ -909,6 +930,10 @@ class FullyConvolutionalNetwork(tf.keras.Model):
                 use_bn[i] = bool(use_batch_normalization[i])
             self._use_batch_normalization = tuple(use_bn)
 
+        self.kernel_regularizer = tensorflow.keras.regularizers.get(
+                kernel_regularizer)
+        self.bias_regularizer = tensorflow.keras.regularizers.get(
+                bias_regularizer)
 
         if self.data_format == "channels_last":
             self._axis = 3
@@ -933,30 +958,36 @@ class FullyConvolutionalNetwork(tf.keras.Model):
             activation_function = self._activations[i]
             use_batch_normalization = self._use_batch_normalization[i]
 
-            conv = tf.keras.layers.Convolution2D(num_filters,
-                                                 (filter_size, filter_size),
-                                                 strides=(1, 1),
-                                                 padding="same",
-                                                 data_format=self.data_format)
+            conv = tf.keras.layers.Convolution2D(
+                num_filters,
+                (filter_size, filter_size),
+                strides=(1, 1),
+                padding="same",
+                kernel_regularizer=self.kernel_regularizer,
+                bias_regularizer=self.bias_regularizer,
+                data_format=self.data_format)
             self._layers.append(conv)
+
             if use_batch_normalization:
                 bn = tf.keras.layers.BatchNormalization(axis=self._axis)
                 self._layers.append(bn)
             self._layers.append(activation_function)
 
         # Final convolution to generate the requested output number of channels
-        conv = tf.keras.layers.Convolution2D(self._output_channels,
-                                             (1, 1),  # Filter size
-                                             strides=(1, 1),
-                                             padding="same",
-                                             data_format=self.data_format)
+        conv = tf.keras.layers.Convolution2D(
+            self._output_channels,
+            (1, 1),  # Filter size
+            strides=(1, 1),
+            padding="same",
+            kernel_regularizer=self.kernel_regularizer,
+            bias_regularizer=self.bias_regularizer,
+            data_format=self.data_format)
         self._layers.append(conv)
 
         self._initialised = True
 
     def call(self, inputs):
         """Combine all layers into an end-to-end model."""
-
         if not self._initialised:
             raise RuntimeError("Model is not initialised. Something's wrong!")
 
@@ -1105,8 +1136,8 @@ class UNet(BaseModel):
     References
     ----------
     .. [1] O. Ronneberger, P. Fischer and T. Brox (2015). "U-Net: Convolutional
-        Networks for Biomedical Image Segmentation". arXiv:1505.04597v1 [cs.CV],
-        available at: https://arxiv.org/abs/1505.04597.
+        Networks for Biomedical Image Segmentation". arXiv:1505.04597v1
+        [cs.CV], available at: https://arxiv.org/abs/1505.04597.
 
     Examples
     --------
@@ -1152,6 +1183,7 @@ class UNet(BaseModel):
     >>> np.abs(np.sum(Y - X) - 1500.0) < 5.0
     True
     """
+
     def __init__(self,
                  input_shape,
                  output_channels=1,
@@ -1185,13 +1217,13 @@ class UNet(BaseModel):
                                    data_format=data_format,
                                    name=name)
 
-        assert(len(self._input_shape) in [3])
+        assert (len(self._input_shape) in [3])
 
         self.output_channels = max(1, int(output_channels))
 
         if len(num_conv_layers) < 1:
             raise ValueError("``num_conv_layers`` must have length at least "
-                              "1.")
+                             "1.")
         else:
             self.num_conv_layers = tuple(num_conv_layers)
 
@@ -1201,7 +1233,7 @@ class UNet(BaseModel):
             self.filter_sizes = (filter_sizes,) * len(self.num_conv_layers)
         elif len(filter_sizes) != len(self.num_conv_layers):
             raise ValueError("``filter_sizes`` should have the same "
-                              "length as ``num_conv_layers``.")
+                             "length as ``num_conv_layers``.")
         else:
             self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
 
@@ -1209,11 +1241,9 @@ class UNet(BaseModel):
         self.activations_enc = nethin.utils.deserialize_activations(
                 activations,
                 length=len(self.num_conv_layers))
-                # device=self.device)
         self.activations_dec = nethin.utils.deserialize_activations(
                 activations,  # TODO: Reverse order??
                 length=len(self.num_conv_layers))
-                # device=self.device)
 
         self._output_activations_orig = output_activation
         self.output_activation = nethin.utils.deserialize_activations(
@@ -1226,8 +1256,8 @@ class UNet(BaseModel):
                    use_strided_convolution,
                    use_maxpooling]) != 1:
             raise ValueError("One and only one of ``use_downconvolution``, "
-                              "``use_strided_convolution``, "
-                              "``use_maxpooling`` can be ``True``.")
+                             "``use_strided_convolution``, "
+                             "``use_maxpooling`` can be ``True``.")
         self.use_downconvolution = bool(use_downconvolution)
         self.use_strided_convolution = bool(use_strided_convolution)
         self.use_maxpooling = bool(use_maxpooling)
@@ -1239,8 +1269,8 @@ class UNet(BaseModel):
                    use_strided_deconvolution,
                    use_maxunpooling]) != 1:
             raise ValueError("One and only one of ``use_upconvolution``, "
-                              "``use_strided_deconvolution``, "
-                              "``use_maxunpooling`` can be ``True``.")
+                             "``use_strided_deconvolution``, "
+                             "``use_maxunpooling`` can be ``True``.")
         self.use_upconvolution = bool(use_upconvolution)
         self.use_strided_deconvolution = bool(use_strided_deconvolution)
         self.use_maxunpooling = bool(use_maxunpooling)
@@ -1261,7 +1291,6 @@ class UNet(BaseModel):
         self.dense_activations = nethin.utils.deserialize_activations(
                 dense_activations,
                 length=len(self.dense_sizes))
-                # device=self.device)
 
         self.dense_dropout = max(0.0, min(float(dense_dropout), 1.0))
 
@@ -1282,7 +1311,6 @@ class UNet(BaseModel):
 
         self.__initialised = False
         self.__generate_tensors()
-
 
     def __generate_tensors(self):
 
@@ -1316,8 +1344,8 @@ class UNet(BaseModel):
                             data_format="channels_last",  # TODO: Fix!
                             kernel_initializer=kernel_initializer_i,
                             bias_initializer=bias_initializer_i)
-                            # kernel_regularizer=kernel_regularizer_i,
-                            # bias_regularizer=bias_regularizer_i)
+                    # kernel_regularizer=kernel_regularizer_i,
+                    # bias_regularizer=bias_regularizer_i)
                 else:
                     layer = tensorflow.keras.layers.Convolution2D(
                             num_filters_i,
@@ -1370,8 +1398,8 @@ class UNet(BaseModel):
                             data_format="channels_last",  # TODO: Fix!
                             kernel_initializer=kernel_initializer_i,
                             bias_initializer=bias_initializer_i)
-                            # kernel_regularizer=kernel_regularizer_i,
-                            # bias_regularizer=bias_regularizer_i)
+                    # kernel_regularizer=kernel_regularizer_i,
+                    # bias_regularizer=bias_regularizer_i)
                 else:
                     layer = tensorflow.keras.layers.Convolution2D(
                             num_filters_i,
@@ -1388,9 +1416,9 @@ class UNet(BaseModel):
 
             elif self.use_downconvolution:
                 layer = nethin.layers.Resampling2D(
-                        [0.5, 0.5],
-                        method=nethin.layers.Resampling2D.ResizeMethod.BILINEAR,
-                        data_format=self.data_format)
+                    [0.5, 0.5],
+                    method=nethin.layers.Resampling2D.ResizeMethod.BILINEAR,
+                    data_format=self.data_format)
                 self.__layers_encoder.append(layer)
 
             else:  # Should not be able to happen!
@@ -1417,8 +1445,8 @@ class UNet(BaseModel):
                         data_format="channels_last",  # TODO: Fix!
                         kernel_initializer=kernel_initializer_i,
                         bias_initializer=bias_initializer_i)
-                        # kernel_regularizer=kernel_regularizer_i,
-                        # bias_regularizer=bias_regularizer_i)
+                # kernel_regularizer=kernel_regularizer_i,
+                # bias_regularizer=bias_regularizer_i)
             else:
                 layer = tensorflow.keras.layers.Convolution2D(
                         num_filters_i,
@@ -1620,7 +1648,6 @@ class UNet(BaseModel):
 
         self.__layers_decoder.append(layer)
 
-
         # Optional dense part at the end if not fully convolutional
         if len(self.dense_sizes) > 0:
 
@@ -1662,7 +1689,6 @@ class UNet(BaseModel):
     # @tensorflow.autograph.experimental.do_not_convert
     def call(self, inputs, training=False):
         """Combine all layers into an end-to-end model."""
-
         x = inputs
 
         # Build the encoding part (contractive path)
@@ -1721,7 +1747,6 @@ class UNet(BaseModel):
             else:  # Should not be able to happen!
                 raise RuntimeError("No subsampling method selected.")
 
-
         # Last encoding part (contractive path)
         num_conv_layers_i = self.num_conv_layers[-1]
 
@@ -1742,10 +1767,8 @@ class UNet(BaseModel):
             layer_index += 1
             x = layer(x)
 
-
         # Make sure we haven't missed anything!
-        assert(layer_index == len(self.__layers_encoder))
-
+        assert (layer_index == len(self.__layers_encoder))
 
         # First decoding part (expansive path)
         num_conv_layers_i = self.num_conv_layers[-1]
@@ -1773,7 +1796,6 @@ class UNet(BaseModel):
             layer = self.__layers_decoder[layer_index]
             layer_index += 1
             x = layer(x)
-
 
         # Build decoding part (expansive path)
         for i in range(2, len(self.num_conv_layers) + 1):
@@ -1854,10 +1876,8 @@ class UNet(BaseModel):
         layer_index += 1
         x = layer(x)
 
-
         # Make sure we haven't missed anything!
-        assert(layer_index == len(self.__layers_decoder))
-
+        assert (layer_index == len(self.__layers_decoder))
 
         # Optional dense part at the end if not fully convolutional
         if len(self.dense_sizes) > 0:
@@ -1898,21 +1918,1241 @@ class UNet(BaseModel):
             layer_index += 1
             x = layer(x)
 
-
             # Make sure we haven't missed anything!
-            assert(layer_index == len(self.__layers_dense))
-
+            assert (layer_index == len(self.__layers_dense))
 
         if self.output_activation is not None:
             # Output activation function
             x = self.output_activation(x)
-
 
         outputs = x
 
         return outputs
 
 
+class Encoder(BaseModel):
+
+    def __init__(self,
+                 input_shape,
+                 num_conv_layers=[2, 2, 2, 2, 1],
+                 num_filters=[64, 128, 256, 512, 1024],
+                 filter_sizes=[3, 3, 3, 3, 3],
+                 activations=["relu", "relu", "relu", "relu", "relu"],
+                 use_strided_convolution=True,
+                 use_downconvolution=False,
+                 use_maxpooling=False,
+                 use_batch_normalization=False,
+                 kernel_initializer="glorot_uniform",
+                 bias_initializer="zeros",
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
+                 data_format=None,
+                 name="Encoder",
+                 ):
+
+        super(Encoder, self).__init__(
+            input_shape,
+            data_format=data_format,
+            name=name,
+            )
+
+        self.num_conv_layers = num_conv_layers
+        self.num_filters = num_filters
+        self.filter_sizes = filter_sizes
+        self.activations = activations
+        self.use_strided_convolution = use_strided_convolution
+        self.use_downconvolution = use_downconvolution
+        self.use_maxpooling = use_maxpooling
+        self.use_batch_normalization = use_batch_normalization
+        self.kernel_initializer = kernel_initializer
+        self.bias_initializer = bias_initializer
+        self.kernel_regularizer = kernel_regularizer
+        self.bias_regularizer = bias_regularizer
+        self.data_format = data_format
+
+    def build(self, input_shape):
+        self.model_layers = []
+
+        # Create layers for the encoding part (contractive path)
+        for i in range(len(self.num_conv_layers)):
+
+            num_conv_layers_i = self.num_conv_layers[i]
+            num_filters_i = self.num_filters[i]
+            filter_sizes_i = self.filter_sizes[i]
+            activation_function_i = self.activations[i]
+            kernel_initializer_i = self.kernel_initializer
+            bias_initializer_i = self.bias_initializer
+            kernel_regularizer_i = self.kernel_regularizer
+            bias_regularizer_i = self.bias_regularizer
+
+            # Encoding convolutions
+            for j in range(num_conv_layers_i):
+                if self._input_dim == 1:
+                    Convolution = tensorflow.keras.layers.Convolution1D
+                elif self._input_dim == 2:
+                    Convolution = tensorflow.keras.layers.Convolution2D
+                elif self._input_dim == 3:
+                    Convolution = tensorflow.keras.layers.Convolution3D
+                else:
+                    raise ValueError("The input image dimensions are "
+                                     "wrong!")
+
+                layer = Convolution(
+                        num_filters_i,
+                        (filter_sizes_i,) * self._input_dim,
+                        strides=(1,) * self._input_dim,
+                        padding='same',
+                        data_format=self.data_format,
+                        dilation_rate=(1,) * self._input_dim,
+                        activation=None,
+                        use_bias=not self.use_batch_normalization,
+                        kernel_initializer=kernel_initializer_i,
+                        bias_initializer=bias_initializer_i,
+                        kernel_regularizer=kernel_regularizer_i,
+                        bias_regularizer=bias_regularizer_i,
+                        activity_regularizer=None,
+                        kernel_constraint=None,
+                        bias_constraint=None)
+
+                self.model_layers.append(layer)
+
+                if self.use_batch_normalization:
+                    layer = tensorflow.keras.layers.BatchNormalization(
+                            axis=self._axis)
+
+                    self.model_layers.append(layer)
+
+                self.model_layers.append(activation_function_i)
+
+            # Downsampling layer
+            if i < len(self.num_conv_layers) - 1:  # Not for last layer
+
+                if self.use_strided_convolution:
+                    if self._input_dim == 1:
+                        Conv = tensorflow.keras.layers.Convolution1D
+                    elif self._input_dim == 2:
+                        Conv = tensorflow.keras.layers.Convolution2D
+                    elif self._input_dim == 3:
+                        Conv = tensorflow.keras.layers.Convolution3D
+                    else:
+                        raise ValueError("The input image dimensions "
+                                         "are wrong!")
+
+                    layer = Conv(
+                            num_filters_i,
+                            (filter_sizes_i,) * self._input_dim,
+                            strides=(2,) * self._input_dim,
+                            padding="same",
+                            data_format=self.data_format,
+                            dilation_rate=(1,) * self._input_dim,
+                            activation=None,
+                            use_bias=True,  # Used here, no batchnorm
+                            kernel_initializer=kernel_initializer_i,
+                            bias_initializer=bias_initializer_i,
+                            kernel_regularizer=kernel_regularizer_i,
+                            bias_regularizer=bias_regularizer_i,
+                            activity_regularizer=None,
+                            kernel_constraint=None,
+                            bias_constraint=None)
+
+                    self.model_layers.append(layer)
+
+                elif self.use_maxpooling:
+                    if self._input_dim == 1:
+                        MaxPool = tensorflow.keras.layers.MaxPooling1D
+                    elif self._input_dim == 2:
+                        MaxPool = tensorflow.keras.layers.MaxPooling2D
+                    elif self._input_dim == 3:
+                        MaxPool = tensorflow.keras.layers.MaxPooling3D
+                    else:
+                        raise ValueError("The input image dimensions "
+                                         "are wrong!")
+
+                    layer = MaxPool(
+                        pool_size=(2,) * self._input_dim,
+                        strides=(2,) * self._input_dim,
+                        padding="same",
+                        data_format=self.data_format,
+                        )
+
+                    self.model_layers.append(layer)
+
+                elif self.use_downconvolution:
+                    assert (self._input_dim == 2)
+
+                    layer = nethin.layers.Resampling2D(
+                        [0.5, 0.5],
+                        method=nethin.layers.Resampling2D.ResizeMethod.BILINEAR,
+                        data_format=self.data_format)
+
+                    self.model_layers.append(layer)
+
+                else:  # Should not be able to happen!
+                    raise RuntimeError("No subsampling method "
+                                       "selected.")
+
+    def call(self, inputs, training=False):
+        """Combine all layers into an end-to-end model."""
+        x = inputs
+
+        # Build the encoding part (contractive path)
+        layer_index = 0
+        for i in range(len(self.num_conv_layers)):
+
+            num_conv_layers_i = self.num_conv_layers[i]
+
+            for j in range(num_conv_layers_i):
+                # Convolution layer
+                layer = self.model_layers[layer_index]
+                layer_index += 1
+                x = layer(x)
+
+                if self.use_batch_normalization:
+                    # Batch normalisation layer
+                    layer = self.model_layers[layer_index]
+                    layer_index += 1
+                    x = layer(x, training=training)
+
+                # Activation function
+                layer = self.model_layers[layer_index]
+                layer_index += 1
+                x = layer(x)
+
+            if i < len(self.num_conv_layers) - 1:  # Not for last layer
+
+                if self.use_strided_convolution \
+                        or self.use_maxpooling \
+                        or self.use_downconvolution:
+                    # Strided convolution, Max pooling, or Resampling
+                    layer = self.model_layers[layer_index]
+                    layer_index += 1
+                    x = layer(x)
+
+                else:  # Should not be able to happen!
+                    raise RuntimeError("No subsampling method "
+                                       "selected.")
+
+        # Make sure we haven't missed anything!
+        assert (layer_index == len(self.model_layers))
+
+        outputs = x
+
+        return outputs
+
+
+class Decoder(BaseModel):
+
+    def __init__(self,
+                 input_shape,
+                 output_channels=None,
+                 num_conv_layers=[2, 2, 2, 2, 1],
+                 num_filters=[64, 128, 256, 512, 1024],
+                 filter_sizes=[3, 3, 3, 3, 3],
+                 activations=["relu", "relu", "relu", "relu", "relu"],
+                 output_activation=None,
+                 use_strided_deconvolution=True,
+                 use_deconvolutions=False,
+                 use_upconvolution=False,
+                 use_maxunpooling=False,
+                 use_batch_normalization=False,
+                 kernel_initializer="glorot_uniform",
+                 bias_initializer="zeros",
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
+                 data_format=None,
+                 name="Decoder",
+                 ):
+
+        super(Decoder, self).__init__(
+            input_shape,
+            data_format=data_format,
+            name=name,
+            )
+
+        self.output_channels = output_channels
+        self.num_conv_layers = num_conv_layers
+        self.num_filters = num_filters
+        self.filter_sizes = filter_sizes
+        self.activations = activations
+        self.output_activation = output_activation
+        self.use_strided_deconvolution = use_strided_deconvolution
+        self.use_deconvolutions = use_deconvolutions
+        self.use_upconvolution = use_upconvolution
+        self.use_maxunpooling = use_maxunpooling
+        self.use_batch_normalization = use_batch_normalization
+        self.kernel_initializer = kernel_initializer
+        self.bias_initializer = bias_initializer
+        self.kernel_regularizer = kernel_regularizer
+        self.bias_regularizer = bias_regularizer
+        self.data_format = data_format
+
+    def build(self, input_shape):
+        self.model_layers = []
+
+        # Build decoding part (expansive path)
+        for i in range(1, len(self.num_conv_layers) + 1):
+            num_conv_layers_i = self.num_conv_layers[-i]
+            num_filters_i = self.num_filters[-i]
+            filter_sizes_i = self.filter_sizes[-i]
+            activation_function_i = self.activations[i - 1]
+            kernel_initializer_i = self.kernel_initializer
+            bias_initializer_i = self.bias_initializer
+            kernel_regularizer_i = self.kernel_regularizer
+            bias_regularizer_i = self.bias_regularizer
+
+            if i > 1:  # Don't add upsampling for first layer
+
+                if self.use_strided_deconvolution:
+                    # Strided deconvolution for upsampling
+                    if self._input_dim == 1:
+                        ConvT = tensorflow.keras.layers.Convolution1DTranspose
+                    elif self._input_dim == 2:
+                        ConvT = tensorflow.keras.layers.Convolution2DTranspose
+                    elif self._input_dim == 3:
+                        ConvT = tensorflow.keras.layers.Convolution3DTranspose
+                    else:
+                        raise ValueError("The input image dimensions are "
+                                         "wrong!")
+
+                    layer = ConvT(
+                            num_filters_i,
+                            (filter_sizes_i,) * self._input_dim,
+                            strides=(2,) * self._input_dim,  # Upsampling
+                            padding="same",
+                            data_format=self.data_format,
+                            dilation_rate=(1,) * self._input_dim,
+                            activation=None,
+                            use_bias=True,  # Used here, since no batchnorm
+                            kernel_initializer=kernel_initializer_i,
+                            bias_initializer=bias_initializer_i,
+                            kernel_regularizer=kernel_regularizer_i,
+                            bias_regularizer=bias_regularizer_i,
+                            activity_regularizer=None,
+                            kernel_constraint=None,
+                            bias_constraint=None)
+
+                    self.model_layers.append(layer)
+
+                elif self.use_upconvolution:
+                    assert (self._input_dim == 2)
+
+                    layer = nethin.layers.Resampling2D(
+                            (2, 2),
+                            data_format=self.data_format)
+
+                    self.model_layers.append(layer)
+
+                    layer = tensorflow.keras.layers.Convolution2D(
+                            num_filters_i,
+                            (2, 2),  # Filter size of up-convolution
+                            strides=(1, 1),
+                            padding="same",
+                            data_format=self.data_format,
+                            dilation_rate=(1, 1),
+                            activation=None,
+                            use_bias=True,  # Used here, since no batchnorm
+                            kernel_initializer=kernel_initializer_i,
+                            bias_initializer=bias_initializer_i,
+                            kernel_regularizer=kernel_regularizer_i,
+                            bias_regularizer=bias_regularizer_i,
+                            activity_regularizer=None,
+                            kernel_constraint=None,
+                            bias_constraint=None)
+
+                    self.model_layers.append(layer)
+
+                elif self.use_maxunpooling:
+                    assert (self._input_dim == 2)
+
+                    layer = nethin.layers.MaxUnpooling2D(
+                            pool_size=(2, 2),
+                            strides=(2, 2),  # Not used
+                            padding="same",  # Not used
+                            data_format="channels_last",
+                            # mask=mask,
+                            fill_zeros=True)
+
+                    self.model_layers.append(layer)
+
+                else:  # Should not be able to happen!
+                    raise RuntimeError("No upsampling method selected.")
+
+            # Decoding convolution layers
+            for j in range(num_conv_layers_i):
+
+                if self.use_deconvolutions:  # Use transposed convolutions?
+                    if self._input_dim == 1:
+                        Conv = tensorflow.keras.layers.Convolution1DTranspose
+                    elif self._input_dim == 2:
+                        Conv = tensorflow.keras.layers.Convolution2DTranspose
+                    elif self._input_dim == 3:
+                        Conv = tensorflow.keras.layers.Convolution3DTranspose
+                    else:
+                        raise ValueError("The input image dimensions are "
+                                         "wrong!")
+                else:
+                    if self._input_dim == 1:
+                        Conv = tensorflow.keras.layers.Convolution1D
+                    elif self._input_dim == 2:
+                        Conv = tensorflow.keras.layers.Convolution2D
+                    elif self._input_dim == 3:
+                        Conv = tensorflow.keras.layers.Convolution3D
+                    else:
+                        raise ValueError("The input image dimensions are "
+                                         "wrong!")
+
+                layer = Conv(
+                        num_filters_i,
+                        (filter_sizes_i,) * self._input_dim,
+                        strides=(1,) * self._input_dim,
+                        padding="same",
+                        data_format=self.data_format,
+                        dilation_rate=(1,) * self._input_dim,
+                        activation=None,
+                        use_bias=not self.use_batch_normalization,
+                        kernel_initializer=kernel_initializer_i,
+                        bias_initializer=bias_initializer_i,
+                        kernel_regularizer=kernel_regularizer_i,
+                        bias_regularizer=bias_regularizer_i,
+                        activity_regularizer=None,
+                        kernel_constraint=None,
+                        bias_constraint=None)
+
+                self.model_layers.append(layer)
+
+                if self.use_batch_normalization:
+                    layer = tensorflow.keras.layers.BatchNormalization(
+                            axis=self._axis)
+
+                    self.model_layers.append(layer)
+
+                self.model_layers.append(activation_function_i)
+
+        # Final convolution to generate the requested output number of channels
+        layer = tensorflow.keras.layers.Convolution2D(
+                self.output_channels,
+                (1,) * self._input_dim,  # Filter size
+                strides=(1,) * self._input_dim,
+                padding="same",
+                data_format=self.data_format,
+                dilation_rate=(1,) * self._input_dim,
+                activation=None,
+                use_bias=True,
+                kernel_initializer=kernel_initializer_i,
+                bias_initializer=bias_initializer_i,
+                kernel_regularizer=kernel_regularizer_i,
+                bias_regularizer=bias_regularizer_i,
+                activity_regularizer=None,
+                kernel_constraint=None,
+                bias_constraint=None)
+
+        self.model_layers.append(layer)
+
+    def call(self, inputs, training=False):
+        """Combine all layers into an end-to-end model."""
+        x = inputs
+
+        # Build decoding part (expansive path)
+        layer_index = 0
+        for i in range(1, len(self.num_conv_layers) + 1):
+
+            num_conv_layers_i = self.num_conv_layers[-i]
+
+            if i > 1:  # Don't add upsampling for first layer
+                if self.use_upconvolution:
+                    # Resampling layer
+                    layer = self.model_layers[layer_index]
+                    layer_index += 1
+                    x = layer(x)
+
+                if self.use_upconvolution or self.use_strided_deconvolution \
+                        or self.use_maxunpooling:
+                    # Resampling, Strided deconvolution, or Max unpooling
+                    layer = self.model_layers[layer_index]
+                    layer_index += 1
+                    x = layer(x)
+
+                else:  # Should not be able to happen!
+                    raise RuntimeError("No upsampling method selected.")
+
+            for j in range(num_conv_layers_i):
+                # if self.use_deconvolutions:
+                # Transposed convolution or Convolution layer
+                layer = self.model_layers[layer_index]
+                layer_index += 1
+                x = layer(x)
+
+                if self.use_batch_normalization:
+                    # Batch normalisation layer
+                    layer = self.model_layers[layer_index]
+                    layer_index += 1
+                    x = layer(x, training=training)
+
+                # Activation function
+                layer = self.model_layers[layer_index]
+                layer_index += 1
+                x = layer(x)
+
+        # Final convolution to generate the requested output number of channels
+        layer = self.model_layers[layer_index]
+        layer_index += 1
+        x = layer(x)
+
+        # Make sure we haven't missed anything!
+        assert (layer_index == len(self.model_layers))
+
+        if self.output_activation is not None:
+            # Output activation function
+            x = self.output_activation(x)
+
+        outputs = x
+
+        return outputs
+
+
+class ConvolutionalAutoencoder(BaseModel):
+    """Generates a standard convolutional autoencoder architechture.
+
+    The architecture has Conv + BN + ReLU and downsampling layers. It is very
+    similar to the UNet, but without skip connections.
+
+    Can either be used to reconstruct the input data (standard autoencoder) or
+    to transfer to another modality.
+
+    Parameters
+    ----------
+    input_shape : tuple of ints, length 2, 3, or 4
+        The shape of the input data, excluding the batch dimension. Assumes a
+        channel dimension is included adhering to ``data_format``. Length 2
+        assumes 1-dimensional data, length 3 assumes 2-dimensional data, and
+        length 4 assumes 3-dimensional images.
+
+    output_channels : int or None
+        The number of output channels of the network. If None, the same number
+        of channels as the input is assumed.
+
+    num_conv_layers : tuple of int, optional
+        Must be of length at least one. The number of chained convolutions
+        for each subsampling path. Default is ``(2, 2, 2, 2, 1)``.
+
+    num_filters : tuple of int, optional
+        The number of convolution filters in each subsampling path. Must have
+        the same length as ``num_conv_layers``. Default is ``(64, 128, 256,
+        512, 1024)``.
+
+    filter_sizes : int or tuple of int, optional
+        The filter size to use in each subsampling path. If a single int, the
+        same filter size will be used in all layers. If a tuple, then it must
+        have the same length as ``num_conv_layers``. Default is 3.
+
+    activations : str or tuple of str or Activation, optional
+        The activations to use in each subsampling path. If a single str or
+        Layer, the same activation will be used for all layers. If a tuple,
+        then it must have the same length as ``num_conv_layers``. Default
+        is "relu".
+
+    output_activation : str, Activation, or None, optional
+        The final output activation. Default is None, no activation ("linear"
+        activation).
+
+    use_strided_convolution : bool, optional
+        If True, uses strided convolution for downsampling. Default is True,
+        which means to use strided convolutions.
+
+    use_strided_deconvolution : bool, optional
+        If True, uses strided deconvolution for upsampling. Default is True,
+        which means to use strided deconvolutions.
+
+    use_deconvolutions : bool, optional
+        Use deconvolutions (transposed convolutinos) in the deconding part
+        instead of convolutions. This should have only small practical effect,
+        since deconvolutions are also convolutions, but may be preferred in
+        some cases. Default is False, do not use deconvolutions in the decoding
+        part.
+
+    use_downconvolution : bool, optional
+        If False, uses downsampling followed by a 2x2 convolution for spatial
+        downsampling. Default is False, which means to not use downconvolution.
+
+    use_upconvolution : bool, optional
+        The use of upsampling followed by a convolution can reduce artifacts
+        that appear when e.g., deconvolutions with ``stride > 1`` are used.
+        Default is False, which means to not use upsampling followed by a 2x2
+        convolution (denoted "upconvolution" in [1]_).
+
+    use_maxpooling : bool, optional
+        If True, uses 2x2 maxpooling for downsampling. Default is False, which
+        means to not use maxpooling for downsampling.
+
+    use_maxunpooling : bool, optional
+        If True, uses 2x2 maxunpooling for upsampling. Default is False, which
+        means to not use unpooling.
+
+    use_batch_normalization : bool, optional
+        Whether or not to use batch normalization after each convolution in the
+        encoding part. Default is False, do not use batch normalization.
+
+    kernel_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for the weights of all layers. Default is
+        ``"glorot_uniform"``.
+
+    bias_initializer : str, keras.Initializer or Callable, optional
+        The initialiser to use for all biases in all layers. Default is
+        ``"zeros"``, which means to initialise all biases to zero.
+
+    kernel_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the `kernel` weights matrix.
+
+    bias_regularizer : str, keras.regularizers.Regularizer or Callable,
+            optional
+        Regularizer function applied to the bias vector.
+
+    data_format : str, optional
+        One of ``channels_last`` (default) or ``channels_first``. The ordering
+        of the dimensions in the inputs. ``channels_last`` corresponds to
+        inputs with shape ``(batch, height, width, channels)`` while
+        ``channels_first`` corresponds to inputs with shape ``(batch, channels,
+        height, width)``. It defaults to the ``image_data_format`` value found
+        in your Keras config file at ``~/.keras/keras.json``. If you never set
+        it, then it will be "channels_last".
+
+    device : str, optional
+        A particular device to run the model on. Default is ``None``, which
+        means to run on the default device (usually the first GPU device). Use
+        ``nethin.utils.Helper.get_device()`` to see available devices.
+
+    name : str, optional
+        The name of the network. Default is "ConvolutionalAutoencoder".
+
+    References
+    ----------
+    .. [1] O. Ronneberger, P. Fischer and T. Brox (2015). "U-Net: Convolutional
+        Networks for Biomedical Image Segmentation". arXiv:1505.04597v1
+        [cs.CV], available at: https://arxiv.org/abs/1505.04597.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> np.random.seed(42)
+    >>> import tensorflow as tf
+    >>> tf.random.set_seed(42)
+    >>> import nethin
+    >>> import nethin.models
+    >>>
+    >>> input_shape = (128, 128, 1)
+    >>> output_channels = None
+    >>> num_conv_layers = (2, 1)
+    >>> num_filters = (32, 64)
+    >>> filter_sizes = 3
+    >>> activations = "relu"
+    >>> use_strided_convolution = True
+    >>> use_strided_deconvolution = True
+    >>> data_format = None
+    >>>
+    >>> X = np.random.randn(*input_shape)
+    >>> X = X[np.newaxis, ...]
+    >>>
+    >>> model = nethin.models.ConvolutionalAutoencoder(
+    ...     input_shape=input_shape,
+    ...     output_channels=input_shape[-1],
+    ...     num_conv_layers=num_conv_layers,
+    ...     num_filters=num_filters,
+    ...     filter_sizes=filter_sizes,
+    ...     activations=activations,
+    ...     use_strided_convolution=use_strided_convolution,
+    ...     use_strided_deconvolution=use_strided_deconvolution,
+    ...     data_format=data_format)
+    >>> model._input_shape
+    (128, 128, 1)
+    >>> model.output_channels
+    1
+    >>> model.compile(optimizer="Adam", loss="mse")
+    >>> X.shape
+    (1, 128, 128, 1)
+    >>> Y = model.predict_on_batch(X)
+    >>> Y.shape
+    (1, 128, 128, 1)
+    >>> np.abs(np.sum(Y - X) - 254.0) / np.abs(np.sum(X)) < 0.005
+    True
+    """
+
+    def __init__(self,
+                 input_shape,
+                 output_channels=None,
+                 num_conv_layers=[2, 2, 2, 2, 1],
+                 num_filters=[64, 128, 256, 512, 1024],
+                 filter_sizes=3,
+                 activations="relu",
+                 output_activation=None,
+                 use_strided_convolution=True,
+                 use_strided_deconvolution=True,
+                 use_deconvolutions=False,
+                 use_downconvolution=False,
+                 use_upconvolution=False,
+                 use_maxpooling=False,
+                 use_maxunpooling=False,
+                 use_batch_normalization=False,
+                 kernel_initializer="glorot_uniform",
+                 bias_initializer="zeros",
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
+                 data_format=None,
+                 # device=None,
+                 name="ConvolutionalAutoencoder"):
+
+        super(ConvolutionalAutoencoder, self).__init__(
+            input_shape,
+            data_format=data_format,
+            name=name)
+
+        assert (len(self._input_shape) in [2, 3, 4])
+
+        if output_channels is not None:  # The case when None is handled below
+            self.output_channels = max(1, int(output_channels))
+
+        if len(num_conv_layers) < 1:
+            raise ValueError("``num_conv_layers`` must have length at least "
+                             "1.")
+        else:
+            self.num_conv_layers = tuple(num_conv_layers)
+
+        self.num_filters = tuple([int(nf) for nf in num_filters])
+
+        if isinstance(filter_sizes, int):
+            self.filter_sizes = (filter_sizes,) * len(self.num_conv_layers)
+        elif len(filter_sizes) != len(self.num_conv_layers):
+            raise ValueError("``filter_sizes`` should have the same "
+                             "length as ``num_conv_layers``.")
+        else:
+            self.filter_sizes = tuple([int(fs) for fs in filter_sizes])
+
+        self.activations_orig = activations
+        self.activations_enc = nethin.utils.deserialize_activations(
+                activations,
+                length=len(self.num_conv_layers))
+        self.activations_dec = nethin.utils.deserialize_activations(
+                activations,  # TODO: Reverse order??
+                length=len(self.num_conv_layers))
+
+        self.output_activations_orig = output_activation
+        self.output_activation = nethin.utils.deserialize_activations(
+                output_activation)
+
+        use_downconvolution = bool(use_downconvolution)
+        use_strided_convolution = bool(use_strided_convolution)
+        use_maxpooling = bool(use_maxpooling)
+        if np.sum([use_strided_convolution,
+                   use_downconvolution,
+                   use_maxpooling]) != 1:
+            raise ValueError("One and only one of ``use_downconvolution``, "
+                             "``use_strided_convolution``, "
+                             "``use_maxpooling`` can be ``True``.")
+        self.use_strided_convolution = bool(use_strided_convolution)
+        self.use_downconvolution = bool(use_downconvolution)
+        if self.use_downconvolution and self._input_dim != 2:
+            raise ValueError("Can only use downconvolutions with 2D data.")
+        self.use_maxpooling = bool(use_maxpooling)
+
+        use_strided_deconvolution = bool(use_strided_deconvolution)
+        use_upconvolution = bool(use_upconvolution)
+        use_maxunpooling = bool(use_maxunpooling)
+        if np.sum([use_strided_deconvolution,
+                   use_upconvolution,
+                   use_maxunpooling]) != 1:
+            raise ValueError("One and only one of ``use_upconvolution``, "
+                             "``use_strided_deconvolution``, "
+                             "``use_maxunpooling`` can be ``True``.")
+        self.use_strided_deconvolution = bool(use_strided_deconvolution)
+        self.use_upconvolution = bool(use_upconvolution)
+        if self.use_upconvolution and self._input_dim != 2:
+            raise ValueError("Can only use upconvolutions with 2D data.")
+        self.use_maxunpooling = bool(use_maxunpooling)
+        if self.use_maxunpooling and self._input_dim != 2:
+            raise ValueError("Can only use maxunpooling with 2D data.")
+
+        self.use_deconvolutions = bool(use_deconvolutions)
+        self.use_batch_normalization = bool(use_batch_normalization)
+
+        self.kernel_initializer = tensorflow.keras.initializers.get(
+                kernel_initializer)
+        self.bias_initializer = tensorflow.keras.initializers.get(
+                bias_initializer)
+
+        self.kernel_regularizer = tensorflow.keras.regularizers.get(
+                kernel_regularizer)
+        self.bias_regularizer = tensorflow.keras.regularizers.get(
+                bias_regularizer)
+
+        if self.data_format == "channels_last":
+            self._axis = len(self._input_shape)
+            if output_channels is None:
+                self.output_channels = self._input_shape[-1]
+        else:  # data_format == "channels_first":
+            self._axis = 1
+            if output_channels is None:
+                self.output_channels = self._input_shape[0]
+
+        # self.model_initialised = False
+        # self._generate_tensors()
+        # self.__initialised_E = False
+        # self.__initialised_D = False
+
+    # def encode(self, X):
+    #     if not self.__initialised_E:
+    #         if not hasattr(self, "__encoder_output"):
+    #             raise RuntimeError("Model must be built first!")
+
+    #         self.__encoder = tensorflow.keras.models.Model(
+    #                 self.input,
+    #                 self.__encoder_output
+    #             )
+    #         self.__initialised_E = True
+    #     return self.__encoder(X)
+
+    # def decode(self, Z):
+    #     if not self.__initialised_D:
+    #         raise RuntimeError("Model must be built first!")
+    #     return self.__decoder(Z)
+
+    def build(self, input_shape):
+
+        # if self.model_initialised:
+        #     return
+
+        # print("HÄR!!!2")
+
+        # self.__layers_encoder = []
+        # self.__layers_decoder = []
+
+        # # Create layers for the encoding part (contractive path)
+        # for i in range(len(self.num_conv_layers)):
+
+        #     num_conv_layers_i = self.num_conv_layers[i]
+        #     num_filters_i = self.num_filters[i]
+        #     filter_sizes_i = self.filter_sizes[i]
+        #     activation_function_i = self.activations_enc[i]
+        #     kernel_initializer_i = self.kernel_initializer
+        #     bias_initializer_i = self.bias_initializer
+        #     kernel_regularizer_i = self.kernel_regularizer
+        #     bias_regularizer_i = self.bias_regularizer
+
+        #     # Encoding convolutions
+        #     for j in range(num_conv_layers_i):
+        #         if self._input_dim == 1:
+        #             Convolution = tensorflow.keras.layers.Convolution1D
+        #         elif self._input_dim == 2:
+        #             Convolution = tensorflow.keras.layers.Convolution2D
+        #         elif self._input_dim == 3:
+        #             Convolution = tensorflow.keras.layers.Convolution3D
+        #         else:
+        #             raise ValueError("The input image dimensions are wrong!")
+
+        #         layer = Convolution(
+        #                 num_filters_i,
+        #                 (filter_sizes_i,) * self._input_dim,
+        #                 strides=(1,) * self._input_dim,
+        #                 padding='same',
+        #                 data_format=self.data_format,
+        #                 dilation_rate=(1,) * self._input_dim,
+        #                 activation=None,
+        #                 use_bias=not self.use_batch_normalization,
+        #                 kernel_initializer=kernel_initializer_i,
+        #                 bias_initializer=bias_initializer_i,
+        #                 kernel_regularizer=kernel_regularizer_i,
+        #                 bias_regularizer=bias_regularizer_i,
+        #                 activity_regularizer=None,
+        #                 kernel_constraint=None,
+        #                 bias_constraint=None)
+
+        #         self.__layers_encoder.append(layer)
+
+        #         if self.use_batch_normalization:
+        #             layer = tensorflow.keras.layers.BatchNormalization(
+        #                     axis=self._axis)
+
+        #             self.__layers_encoder.append(layer)
+
+        #         self.__layers_encoder.append(activation_function_i)
+
+        #     # Downsampling layer
+        #     if i < len(self.num_conv_layers) - 1:  # Don't add for last layer
+
+        #         if self.use_strided_convolution:
+        #             if self._input_dim == 1:
+        #                 Convolution = tensorflow.keras.layers.Convolution1D
+        #             elif self._input_dim == 2:
+        #                 Convolution = tensorflow.keras.layers.Convolution2D
+        #             elif self._input_dim == 3:
+        #                 Convolution = tensorflow.keras.layers.Convolution3D
+        #             else:
+        #                 raise ValueError("The input image dimensions are "
+        #                                  "wrong!")
+
+        #             layer = Convolution(
+        #                     num_filters_i,
+        #                     (filter_sizes_i,) * self._input_dim,
+        #                     strides=(2,) * self._input_dim,
+        #                     padding="same",
+        #                     data_format=self.data_format,
+        #                     dilation_rate=(1,) * self._input_dim,
+        #                     activation=None,
+        #                     use_bias=True,  # Used here, since no batchnorm
+        #                     kernel_initializer=kernel_initializer_i,
+        #                     bias_initializer=bias_initializer_i,
+        #                     kernel_regularizer=kernel_regularizer_i,
+        #                     bias_regularizer=bias_regularizer_i,
+        #                     activity_regularizer=None,
+        #                     kernel_constraint=None,
+        #                     bias_constraint=None)
+
+        #             self.__layers_encoder.append(layer)
+
+        #         elif self.use_maxpooling:
+        #             if self._input_dim == 1:
+        #                 MaxPooling = tensorflow.keras.layers.MaxPooling1D
+        #             elif self._input_dim == 2:
+        #                 MaxPooling = tensorflow.keras.layers.MaxPooling2D
+        #             elif self._input_dim == 3:
+        #                 MaxPooling = tensorflow.keras.layers.MaxPooling3D
+        #             else:
+        #                 raise ValueError("The input image dimensions are "
+        #                                  "wrong!")
+
+        #             layer = MaxPooling(pool_size=(2,) * self._input_dim,
+        #                                strides=(2,) * self._input_dim,
+        #                                padding="same",
+        #                                data_format=self.data_format,
+        #                                )
+
+        #             self.__layers_encoder.append(layer)
+
+        #         elif self.use_downconvolution:
+        #             assert (self._input_dim == 2)
+
+        #             layer = nethin.layers.Resampling2D(
+        #                 [0.5, 0.5],
+        #                 method=nethin.layers.Resampling2D.ResizeMethod.BILINEAR,
+        #                 data_format=self.data_format)
+
+        #             self.__layers_encoder.append(layer)
+
+        #         else:  # Should not be able to happen!
+        #             raise RuntimeError("No subsampling method selected.")
+
+        # # Build decoding part (expansive path)
+        # for i in range(1, len(self.num_conv_layers) + 1):
+        #     num_conv_layers_i = self.num_conv_layers[-i]
+        #     num_filters_i = self.num_filters[-i]
+        #     filter_sizes_i = self.filter_sizes[-i]
+        #     activation_function_i = self.activations_dec[i - 1]
+        #     kernel_initializer_i = self.kernel_initializer
+        #     bias_initializer_i = self.bias_initializer
+        #     kernel_regularizer_i = self.kernel_regularizer
+        #     bias_regularizer_i = self.bias_regularizer
+
+        #     if i > 1:  # Don't add upsampling for first layer
+
+        #         if self.use_strided_deconvolution:
+        #             # Strided deconvolution for upsampling
+        #             if self._input_dim == 1:
+        #                 ConvT = tensorflow.keras.layers.Convolution1DTranspose
+        #             elif self._input_dim == 2:
+        #                 ConvT = tensorflow.keras.layers.Convolution2DTranspose
+        #             elif self._input_dim == 3:
+        #                 ConvT = tensorflow.keras.layers.Convolution3DTranspose
+        #             else:
+        #                 raise ValueError("The input image dimensions are "
+        #                                  "wrong!")
+
+        #             layer = ConvT(
+        #                     num_filters_i,
+        #                     (filter_sizes_i,) * self._input_dim,
+        #                     strides=(2,) * self._input_dim,  # Upsampling
+        #                     padding="same",
+        #                     data_format=self.data_format,
+        #                     dilation_rate=(1,) * self._input_dim,
+        #                     activation=None,
+        #                     use_bias=True,  # Used here, since no batchnorm
+        #                     kernel_initializer=kernel_initializer_i,
+        #                     bias_initializer=bias_initializer_i,
+        #                     kernel_regularizer=kernel_regularizer_i,
+        #                     bias_regularizer=bias_regularizer_i,
+        #                     activity_regularizer=None,
+        #                     kernel_constraint=None,
+        #                     bias_constraint=None)
+
+        #             self.__layers_decoder.append(layer)
+
+        #         elif self.use_upconvolution:
+        #             assert (self._input_dim == 2)
+
+        #             layer = nethin.layers.Resampling2D(
+        #                     (2, 2),
+        #                     data_format=self.data_format)
+
+        #             self.__layers_decoder.append(layer)
+
+        #             layer = tensorflow.keras.layers.Convolution2D(
+        #                     num_filters_i,
+        #                     (2, 2),  # Filter size of up-convolution
+        #                     strides=(1, 1),
+        #                     padding="same",
+        #                     data_format=self.data_format,
+        #                     dilation_rate=(1, 1),
+        #                     activation=None,
+        #                     use_bias=True,  # Used here, since no batchnorm
+        #                     kernel_initializer=kernel_initializer_i,
+        #                     bias_initializer=bias_initializer_i,
+        #                     kernel_regularizer=kernel_regularizer_i,
+        #                     bias_regularizer=bias_regularizer_i,
+        #                     activity_regularizer=None,
+        #                     kernel_constraint=None,
+        #                     bias_constraint=None)
+
+        #             self.__layers_decoder.append(layer)
+
+        #         elif self.use_maxunpooling:
+        #             assert (self._input_dim == 2)
+
+        #             layer = nethin.layers.MaxUnpooling2D(
+        #                     pool_size=(2, 2),
+        #                     strides=(2, 2),  # Not used
+        #                     padding="same",  # Not used
+        #                     data_format="channels_last",
+        #                     # mask=mask,
+        #                     fill_zeros=True)
+
+        #             self.__layers_decoder.append(layer)
+
+        #         else:  # Should not be able to happen!
+        #             raise RuntimeError("No upsampling method selected.")
+
+        #     # Decoding convolution layers
+        #     for j in range(num_conv_layers_i):
+
+        #         if self.use_deconvolutions:  # Use transposed convolutions?
+        #             if self._input_dim == 1:
+        #                 Conv = tensorflow.keras.layers.Convolution1DTranspose
+        #             elif self._input_dim == 2:
+        #                 Conv = tensorflow.keras.layers.Convolution2DTranspose
+        #             elif self._input_dim == 3:
+        #                 Conv = tensorflow.keras.layers.Convolution3DTranspose
+        #             else:
+        #                 raise ValueError("The input image dimensions are "
+        #                                  "wrong!")
+        #         else:
+        #             if self._input_dim == 1:
+        #                 Conv = tensorflow.keras.layers.Convolution1D
+        #             elif self._input_dim == 2:
+        #                 Conv = tensorflow.keras.layers.Convolution2D
+        #             elif self._input_dim == 3:
+        #                 Conv = tensorflow.keras.layers.Convolution3D
+        #             else:
+        #                 raise ValueError("The input image dimensions are "
+        #                                  "wrong!")
+
+        #         layer = Conv(
+        #                 num_filters_i,
+        #                 (filter_sizes_i,) * self._input_dim,
+        #                 strides=(1,) * self._input_dim,
+        #                 padding="same",
+        #                 data_format=self.data_format,
+        #                 dilation_rate=(1,) * self._input_dim,
+        #                 activation=None,
+        #                 use_bias=not self.use_batch_normalization,
+        #                 kernel_initializer=kernel_initializer_i,
+        #                 bias_initializer=bias_initializer_i,
+        #                 kernel_regularizer=kernel_regularizer_i,
+        #                 bias_regularizer=bias_regularizer_i,
+        #                 activity_regularizer=None,
+        #                 kernel_constraint=None,
+        #                 bias_constraint=None)
+
+        #         self.__layers_decoder.append(layer)
+
+        #         if self.use_batch_normalization:
+        #             layer = tensorflow.keras.layers.BatchNormalization(
+        #                     axis=self._axis)
+
+        #             self.__layers_decoder.append(layer)
+
+        #         self.__layers_decoder.append(activation_function_i)
+
+        # # Final convolution to generate the requested output number of channels
+        # layer = tensorflow.keras.layers.Convolution2D(
+        #         self.output_channels,
+        #         (1,) * self._input_dim,  # Filter size
+        #         strides=(1,) * self._input_dim,
+        #         padding="same",
+        #         data_format=self.data_format,
+        #         dilation_rate=(1,) * self._input_dim,
+        #         activation=None,
+        #         use_bias=True,
+        #         kernel_initializer=kernel_initializer_i,
+        #         bias_initializer=bias_initializer_i,
+        #         kernel_regularizer=kernel_regularizer_i,
+        #         bias_regularizer=bias_regularizer_i,
+        #         activity_regularizer=None,
+        #         kernel_constraint=None,
+        #         bias_constraint=None)
+
+        # self.__layers_decoder.append(layer)
+
+        self.encoder = Encoder(
+            self._input_shape,
+            num_conv_layers=self.num_conv_layers,
+            num_filters=self.num_filters,
+            filter_sizes=self.filter_sizes,
+            activations=self.activations_enc,
+            use_strided_convolution=self.use_strided_convolution,
+            use_downconvolution=self.use_downconvolution,
+            use_maxpooling=self.use_maxpooling,
+            use_batch_normalization=self.use_batch_normalization,
+            kernel_initializer=self.kernel_initializer,
+            bias_initializer=self.bias_initializer,
+            kernel_regularizer=self.kernel_regularizer,
+            bias_regularizer=self.bias_regularizer,
+            data_format=self.data_format,
+            name=self.name + "_Encoder",
+            )
+
+        self.decoder = Decoder(
+            self._input_shape,
+            output_channels=self.output_channels,
+            num_conv_layers=self.num_conv_layers,
+            num_filters=self.num_filters,
+            filter_sizes=self.filter_sizes,
+            activations=self.activations_enc,
+            output_activation=self.output_activation,
+            use_strided_deconvolution=self.use_strided_deconvolution,
+            use_deconvolutions=self.use_deconvolutions,
+            use_upconvolution=self.use_upconvolution,
+            use_maxunpooling=self.use_maxunpooling,
+            use_batch_normalization=self.use_batch_normalization,
+            kernel_initializer=self.kernel_initializer,
+            bias_initializer=self.bias_initializer,
+            kernel_regularizer=self.kernel_regularizer,
+            bias_regularizer=self.bias_regularizer,
+            data_format=self.data_format,
+            name=self.name + "_Decoder",
+            )
+
+        # self.model_initialised = True
+
+        super().build(input_shape)
+
+    # @tensorflow.autograph.experimental.do_not_convert
+    def call(self, inputs, training=False):
+        """Combine all layers into an end-to-end model."""
+        x = inputs
+        # print(inputs)
+
+        # Build the encoding part (contractive path)
+        # layer_index = 0
+        # for i in range(len(self.num_conv_layers)):
+
+        #     num_conv_layers_i = self.num_conv_layers[i]
+
+        #     for j in range(num_conv_layers_i):
+        #         # Convolution layer
+        #         layer = self.__layers_encoder[layer_index]
+        #         layer_index += 1
+        #         x = layer(x)
+
+        #         if self.use_batch_normalization:
+        #             # Batch normalisation layer
+        #             layer = self.__layers_encoder[layer_index]
+        #             layer_index += 1
+        #             x = layer(x, training=training)
+
+        #         # Activation function
+        #         layer = self.__layers_encoder[layer_index]
+        #         layer_index += 1
+        #         x = layer(x)
+
+        #     if i < len(self.num_conv_layers) - 1:  # Don't add for last layer
+
+        #         if self.use_strided_convolution \
+        #                 or self.use_maxpooling or self.use_downconvolution:
+        #             # Strided convolution, Max pooling, or Resampling layer
+        #             layer = self.__layers_encoder[layer_index]
+        #             layer_index += 1
+        #             x = layer(x)
+
+        #         else:  # Should not be able to happen!
+        #             raise RuntimeError("No subsampling method selected.")
+
+        # # Make sure we haven't missed anything!
+        # assert (layer_index == len(self.__layers_encoder))
+
+        x = self.encoder(x)
+
+        # # Build decoding part (expansive path)
+        # layer_index = 0
+        # for i in range(1, len(self.num_conv_layers) + 1):
+
+        #     num_conv_layers_i = self.num_conv_layers[-i]
+
+        #     if i > 1:  # Don't add upsampling for first layer
+        #         if self.use_upconvolution:
+        #             # Resampling layer
+        #             layer = self.__layers_decoder[layer_index]
+        #             layer_index += 1
+        #             x = layer(x)
+
+        #         if self.use_upconvolution or self.use_strided_deconvolution \
+        #                 or self.use_maxunpooling:
+        #             # Resampling, Strided deconvolution, or Max unpooling
+        #             layer = self.__layers_decoder[layer_index]
+        #             layer_index += 1
+        #             x = layer(x)
+
+        #         else:  # Should not be able to happen!
+        #             raise RuntimeError("No upsampling method selected.")
+
+        #     for j in range(num_conv_layers_i):
+        #         # if self.use_deconvolutions:
+        #         # Transposed convolution or Convolution layer
+        #         layer = self.__layers_decoder[layer_index]
+        #         layer_index += 1
+        #         x = layer(x)
+
+        #         if self.use_batch_normalization:
+        #             # Batch normalisation layer
+        #             layer = self.__layers_decoder[layer_index]
+        #             layer_index += 1
+        #             x = layer(x, training=training)
+
+        #         # Activation function
+        #         layer = self.__layers_decoder[layer_index]
+        #         layer_index += 1
+        #         x = layer(x)
+
+        # # Final convolution to generate the requested output number of channels
+        # layer = self.__layers_decoder[layer_index]
+        # layer_index += 1
+        # x = layer(x)
+
+        # # Make sure we haven't missed anything!
+        # assert (layer_index == len(self.__layers_decoder))
+
+        # if self.output_activation is not None:
+        #     # Output activation function
+        #     x = self.output_activation(x)
+
+        x = self.decoder(x)
+
+        outputs = x
+
+        # if not self.__initialised_D:
+        #     self.__decoder = tensorflow.keras.models.Model(
+        #             self.__encoder.output,
+        #             outputs
+        #         )
+        #     self.__initialised_D = True
+
+        return outputs
 
 
 

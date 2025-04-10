@@ -1458,7 +1458,10 @@ class Resampling2D(tensorflow.keras.layers.UpSampling2D):
     array([[1.25, 2.  ],
            [2.  , 2.75]], dtype=float32)
     """
+
     class ResizeMethod(Enum):
+        """Enum for the resize method to use."""
+
         NEAREST_NEIGHBOR = "NEAREST_NEIGHBOR"  # Nearest neighbor interpolation
         BILINEAR = "BILINEAR"  # Bilinear interpolation
         BICUBIC = "BICUBIC"  # Bicubic interpolation
